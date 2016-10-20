@@ -110,15 +110,15 @@ void Builtins::Generate_InOptimizationQueue(MacroAssembler* masm) {
   GenerateTailCallToSharedCode(masm);
 }
 
-static void Generate_JSConstructStubHelper(MacroAssembler* masm,
-                                           bool is_api_function,
-                                           bool create_implicit_receiver,
-                                           bool check_derived_construct) {
+namespace {
+
+void Generate_JSConstructStubHelper(MacroAssembler* masm, bool is_api_function,
+                                    bool create_implicit_receiver,
+                                    bool check_derived_construct) {
   // ----------- S t a t e -------------
   //  -- eax: number of arguments
   //  -- esi: context
   //  -- edi: constructor function
-  //  -- ebx: allocation site or undefined
   //  -- edx: new target
   // -----------------------------------
 
@@ -127,10 +127,8 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
     FrameScope scope(masm, StackFrame::CONSTRUCT);
 
     // Preserve the incoming parameters on the stack.
-    __ AssertUndefinedOrAllocationSite(ebx);
-    __ push(esi);
-    __ push(ebx);
     __ SmiTag(eax);
+    __ push(esi);
     __ push(eax);
 
     if (create_implicit_receiver) {
@@ -198,12 +196,12 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
       Label use_receiver, exit;
 
       // If the result is a smi, it is *not* an object in the ECMA sense.
-      __ JumpIfSmi(eax, &use_receiver);
+      __ JumpIfSmi(eax, &use_receiver, Label::kNear);
 
       // If the type of the result (stored in its map) is less than
       // FIRST_JS_RECEIVER_TYPE, it is not an object in the ECMA sense.
       __ CmpObjectType(eax, FIRST_JS_RECEIVER_TYPE, ecx);
-      __ j(above_equal, &exit);
+      __ j(above_equal, &exit, Label::kNear);
 
       // Throw away the result of the constructor invocation and use the
       // on-stack receiver as the result.
@@ -244,6 +242,8 @@ static void Generate_JSConstructStubHelper(MacroAssembler* masm,
   }
   __ ret(0);
 }
+
+}  // namespace
 
 void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
   Generate_JSConstructStubHelper(masm, false, true, false);
@@ -1056,7 +1056,6 @@ void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
   // -----------------------------------
   // First lookup code, maybe we don't need to compile!
   Label gotta_call_runtime, gotta_call_runtime_no_stack;
-  Label maybe_call_runtime;
   Label try_shared;
   Label loop_top, loop_bottom;
 
@@ -1119,15 +1118,12 @@ void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
   __ mov(entry, FieldOperand(map, index, times_half_pointer_size,
                              SharedFunctionInfo::kOffsetToPreviousCachedCode));
   __ mov(entry, FieldOperand(entry, WeakCell::kValueOffset));
-  __ JumpIfSmi(entry, &maybe_call_runtime);
+  __ JumpIfSmi(entry, &try_shared);
 
   // Found literals and code. Get them into the closure and return.
   __ pop(closure);
   // Store code entry in the closure.
   __ lea(entry, FieldOperand(entry, Code::kHeaderSize));
-
-  Label install_optimized_code_and_tailcall;
-  __ bind(&install_optimized_code_and_tailcall);
   __ mov(FieldOperand(closure, JSFunction::kCodeEntryOffset), entry);
   __ RecordWriteCodeEntryField(closure, entry, eax);
 
@@ -1161,20 +1157,8 @@ void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
   // We found neither literals nor code.
   __ jmp(&gotta_call_runtime);
 
-  __ bind(&maybe_call_runtime);
-  __ pop(closure);
-
-  // Last possibility. Check the context free optimized code map entry.
-  __ mov(entry, FieldOperand(map, FixedArray::kHeaderSize +
-                                      SharedFunctionInfo::kSharedCodeIndex));
-  __ mov(entry, FieldOperand(entry, WeakCell::kValueOffset));
-  __ JumpIfSmi(entry, &try_shared);
-
-  // Store code entry in the closure.
-  __ lea(entry, FieldOperand(entry, Code::kHeaderSize));
-  __ jmp(&install_optimized_code_and_tailcall);
-
   __ bind(&try_shared);
+  __ pop(closure);
   __ pop(new_target);
   __ pop(argument_count);
   // Is the full code valid?

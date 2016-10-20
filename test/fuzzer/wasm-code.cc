@@ -36,7 +36,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   v8::TryCatch try_catch(isolate);
 
   v8::internal::AccountingAllocator allocator;
-  v8::internal::Zone zone(&allocator);
+  v8::internal::Zone zone(&allocator, ZONE_NAME);
 
   TestSignatures sigs;
 
@@ -45,8 +45,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   v8::internal::wasm::WasmFunctionBuilder* f =
       builder.AddFunction(sigs.i_iii());
   f->EmitCode(data, static_cast<uint32_t>(size));
-  f->SetExported();
-  f->SetName("main", 4);
+  f->ExportAs(v8::internal::CStrVector("main"));
 
   ZoneBuffer buffer(&zone);
   builder.WriteTo(buffer);
@@ -57,7 +56,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
   ErrorThrower interpreter_thrower(i_isolate, "Interpreter");
   std::unique_ptr<const WasmModule> module(testing::DecodeWasmModuleForTesting(
-      i_isolate, &zone, &interpreter_thrower, buffer.begin(), buffer.end(),
+      i_isolate, &interpreter_thrower, buffer.begin(), buffer.end(),
       v8::internal::wasm::ModuleOrigin::kWasmOrigin));
 
   if (module == nullptr) {

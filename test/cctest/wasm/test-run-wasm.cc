@@ -79,6 +79,14 @@ WASM_EXEC_TEST(Int32Const_many) {
   }
 }
 
+WASM_EXEC_TEST(GraphTrimming) {
+  // This WebAssembly code requires graph trimming in the TurboFan compiler.
+  WasmRunner<int32_t> r(execution_mode, MachineType::Int32());
+  BUILD(r, kExprGetLocal, 0, kExprGetLocal, 0, kExprGetLocal, 0, kExprI32RemS,
+        kExprI32Eq, kExprGetLocal, 0, kExprI32DivS, kExprUnreachable);
+  r.Call(1);
+}
+
 WASM_EXEC_TEST(Int32Param0) {
   WasmRunner<int32_t> r(execution_mode, MachineType::Int32());
   // return(local[0])
@@ -1853,7 +1861,7 @@ WASM_EXEC_TEST(Infinite_Loop_not_taken2_brif) {
 
 static void TestBuildGraphForSimpleExpression(WasmOpcode opcode) {
   Isolate* isolate = CcTest::InitIsolateOnce();
-  Zone zone(isolate->allocator());
+  Zone zone(isolate->allocator(), ZONE_NAME);
   HandleScope scope(isolate);
   // Enable all optional operators.
   CommonOperatorBuilder common(&zone);
@@ -2240,7 +2248,7 @@ static void Run_WasmMixedCall_N(WasmExecutionMode execution_mode, int start) {
   int num_params = static_cast<int>(arraysize(mixed)) - start;
   for (int which = 0; which < num_params; ++which) {
     v8::internal::AccountingAllocator allocator;
-    Zone zone(&allocator);
+    Zone zone(&allocator, ZONE_NAME);
     TestingModule module(execution_mode);
     module.AddMemory(1024);
     MachineType* memtypes = &mixed[start];
@@ -2632,6 +2640,49 @@ WASM_EXEC_TEST(CallIndirect_NoTable) {
   CHECK_TRAP(r.Call(2));
 }
 
+WASM_EXEC_TEST(CallIndirect_canonical) {
+  TestSignatures sigs;
+  TestingModule module(execution_mode);
+
+  WasmFunctionCompiler t1(sigs.i_ii(), &module);
+  BUILD(t1, WASM_I32_ADD(WASM_GET_LOCAL(0), WASM_GET_LOCAL(1)));
+  t1.CompileAndAdd(/*sig_index*/ 0);
+
+  WasmFunctionCompiler t2(sigs.i_ii(), &module);
+  BUILD(t2, WASM_I32_SUB(WASM_GET_LOCAL(0), WASM_GET_LOCAL(1)));
+  t2.CompileAndAdd(/*sig_index*/ 1);
+
+  WasmFunctionCompiler t3(sigs.f_ff(), &module);
+  BUILD(t3, WASM_F32_SUB(WASM_GET_LOCAL(0), WASM_GET_LOCAL(1)));
+  t3.CompileAndAdd(/*sig_index*/ 2);
+
+  // Signature table.
+  module.AddSignature(sigs.i_ii());
+  module.AddSignature(sigs.i_ii());
+  module.AddSignature(sigs.f_ff());
+
+  // Function table.
+  uint16_t i1 = static_cast<uint16_t>(t1.function_index());
+  uint16_t i2 = static_cast<uint16_t>(t2.function_index());
+  uint16_t i3 = static_cast<uint16_t>(t3.function_index());
+  uint16_t indirect_function_table[] = {i1, i2, i3, i1, i2};
+
+  module.AddIndirectFunctionTable(indirect_function_table,
+                                  arraysize(indirect_function_table));
+  module.PopulateIndirectFunctionTable();
+
+  // Builder the caller function.
+  WasmRunner<int32_t> r(&module, MachineType::Int32());
+  BUILD(r, WASM_CALL_INDIRECT2(1, WASM_GET_LOCAL(0), WASM_I8(77), WASM_I8(11)));
+
+  CHECK_EQ(88, r.Call(0));
+  CHECK_EQ(66, r.Call(1));
+  CHECK_TRAP(r.Call(2));
+  CHECK_EQ(88, r.Call(3));
+  CHECK_EQ(66, r.Call(4));
+  CHECK_TRAP(r.Call(5));
+}
+
 WASM_EXEC_TEST(F32Floor) {
   WasmRunner<float> r(execution_mode, MachineType::Float32());
   BUILD(r, WASM_F32_FLOOR(WASM_GET_LOCAL(0)));
@@ -2830,7 +2881,7 @@ static void CompileCallIndirectMany(LocalType param) {
   TestSignatures sigs;
   for (byte num_params = 0; num_params < 40; ++num_params) {
     v8::internal::AccountingAllocator allocator;
-    Zone zone(&allocator);
+    Zone zone(&allocator, ZONE_NAME);
     HandleScope scope(CcTest::InitIsolateOnce());
     TestingModule module(kExecuteCompiled);
     FunctionSig* sig = sigs.many(&zone, kAstStmt, param, num_params);

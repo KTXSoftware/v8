@@ -290,7 +290,6 @@ class Typer::Visitor : public Reducer {
   JS_SIMPLE_BINOP_LIST(DECLARE_METHOD)
 #undef DECLARE_METHOD
 
-  static Type* JSTypeOfTyper(Type*, Typer*);
   static Type* JSCallFunctionTyper(Type*, Typer*);
 
   static Type* ReferenceEqualTyper(Type*, Type*, Typer*);
@@ -1013,36 +1012,8 @@ Type* Typer::Visitor::JSModulusTyper(Type* lhs, Type* rhs, Typer* t) {
 // JS unary operators.
 
 
-Type* Typer::Visitor::JSTypeOfTyper(Type* type, Typer* t) {
-  Factory* const f = t->isolate()->factory();
-  if (type->Is(Type::Boolean())) {
-    return Type::HeapConstant(f->boolean_string(), t->zone());
-  } else if (type->Is(Type::Number())) {
-    return Type::HeapConstant(f->number_string(), t->zone());
-  } else if (type->Is(Type::String())) {
-    return Type::HeapConstant(f->string_string(), t->zone());
-  } else if (type->Is(Type::Symbol())) {
-    return Type::HeapConstant(f->symbol_string(), t->zone());
-  } else if (type->Is(Type::Union(Type::Undefined(), Type::OtherUndetectable(),
-                                  t->zone()))) {
-    return Type::HeapConstant(f->undefined_string(), t->zone());
-  } else if (type->Is(Type::Null())) {
-    return Type::HeapConstant(f->object_string(), t->zone());
-  } else if (type->Is(Type::Function())) {
-    return Type::HeapConstant(f->function_string(), t->zone());
-  } else if (type->IsHeapConstant()) {
-    return Type::HeapConstant(
-        Object::TypeOf(t->isolate(), type->AsHeapConstant()->Value()),
-        t->zone());
-  } else if (type->IsOtherNumberConstant()) {
-    return Type::HeapConstant(f->number_string(), t->zone());
-  }
-  return Type::InternalizedString();
-}
-
-
 Type* Typer::Visitor::TypeJSTypeOf(Node* node) {
-  return TypeUnaryOp(node, JSTypeOfTyper);
+  return Type::InternalizedString();
 }
 
 
@@ -1379,6 +1350,7 @@ Type* Typer::Visitor::JSCallFunctionTyper(Type* fun, Typer* t) {
         case kStringToUpperCase:
           return Type::String();
 
+        case kStringIterator:
         case kStringIteratorNext:
           return Type::OtherObject();
 
@@ -1386,6 +1358,8 @@ Type* Typer::Visitor::JSCallFunctionTyper(Type* fun, Typer* t) {
         case kArrayIndexOf:
         case kArrayLastIndexOf:
           return Type::Range(-1, kMaxSafeInteger, t->zone());
+        case kArrayPush:
+          return t->cache_.kPositiveSafeInteger;
         // Object functions.
         case kObjectHasOwnProperty:
           return Type::Boolean();
@@ -1556,28 +1530,10 @@ Type* Typer::Visitor::TypeStringLessThanOrEqual(Node* node) {
 }
 
 Type* Typer::Visitor::StringFromCharCodeTyper(Type* type, Typer* t) {
-  type = NumberToUint32(ToNumber(type, t), t);
-  Factory* f = t->isolate()->factory();
-  double min = type->Min();
-  double max = type->Max();
-  if (min == max) {
-    uint32_t code = static_cast<uint32_t>(min) & String::kMaxUtf16CodeUnitU;
-    Handle<String> string = f->LookupSingleCharacterStringFromCode(code);
-    return Type::HeapConstant(string, t->zone());
-  }
   return Type::String();
 }
 
 Type* Typer::Visitor::StringFromCodePointTyper(Type* type, Typer* t) {
-  type = NumberToUint32(ToNumber(type, t), t);
-  Factory* f = t->isolate()->factory();
-  double min = type->Min();
-  double max = type->Max();
-  if (min == max) {
-    uint32_t code = static_cast<uint32_t>(min) & String::kMaxUtf16CodeUnitU;
-    Handle<String> string = f->LookupSingleCharacterStringFromCode(code);
-    return Type::HeapConstant(string, t->zone());
-  }
   return Type::String();
 }
 

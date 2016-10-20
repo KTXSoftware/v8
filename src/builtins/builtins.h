@@ -179,7 +179,6 @@ namespace internal {
   TFS(Typeof, BUILTIN, kNoExtraICState, Typeof)                               \
                                                                               \
   /* Handlers */                                                              \
-  ASH(KeyedLoadIC_Megamorphic, KEYED_LOAD_IC, kNoExtraICState)                \
   TFS(KeyedLoadIC_Megamorphic_TF, KEYED_LOAD_IC, kNoExtraICState,             \
       LoadWithVector)                                                         \
   ASM(KeyedLoadIC_Miss)                                                       \
@@ -224,6 +223,14 @@ namespace internal {
   CPP(ArraySlice)                                                             \
   CPP(ArraySplice)                                                            \
   CPP(ArrayUnshift)                                                           \
+  /* ES6 #sec-array.prototype.entries */                                      \
+  TFJ(ArrayPrototypeEntries, 1)                                               \
+  /* ES6 #sec-array.prototype.keys */                                         \
+  TFJ(ArrayPrototypeKeys, 1)                                                  \
+  /* ES6 #sec-array.prototype.values */                                       \
+  TFJ(ArrayPrototypeValues, 1)                                                \
+  /* ES6 #sec-%arrayiteratorprototype%.next */                                \
+  TFJ(ArrayIteratorPrototypeNext, 1)                                          \
                                                                               \
   /* ArrayBuffer */                                                           \
   CPP(ArrayBufferConstructor)                                                 \
@@ -450,6 +457,8 @@ namespace internal {
   ASM(MathMin)                                                                \
   /* ES6 section 20.2.2.26 Math.pow ( x, y ) */                               \
   TFJ(MathPow, 3)                                                             \
+  /* ES6 section 20.2.2.27 Math.random */                                     \
+  TFJ(MathRandom, 1)                                                          \
   /* ES6 section 20.2.2.28 Math.round ( x ) */                                \
   TFJ(MathRound, 2)                                                           \
   /* ES6 section 20.2.2.29 Math.sign ( x ) */                                 \
@@ -482,6 +491,8 @@ namespace internal {
   TFJ(NumberIsSafeInteger, 2)                                                 \
   /* ES6 section 20.1.2.12 Number.parseFloat ( string ) */                    \
   TFJ(NumberParseFloat, 2)                                                    \
+  /* ES6 section 20.1.2.13 Number.parseInt ( string, radix ) */               \
+  TFJ(NumberParseInt, 3)                                                      \
   CPP(NumberPrototypeToExponential)                                           \
   CPP(NumberPrototypeToFixed)                                                 \
   CPP(NumberPrototypeToLocaleString)                                          \
@@ -511,7 +522,7 @@ namespace internal {
                                                                               \
   /* Object */                                                                \
   CPP(ObjectAssign)                                                           \
-  CPP(ObjectCreate)                                                           \
+  TFJ(ObjectCreate, 3)                                                        \
   CPP(ObjectDefineGetter)                                                     \
   CPP(ObjectDefineProperties)                                                 \
   CPP(ObjectDefineProperty)                                                   \
@@ -523,6 +534,7 @@ namespace internal {
   CPP(ObjectGetOwnPropertyNames)                                              \
   CPP(ObjectGetOwnPropertySymbols)                                            \
   CPP(ObjectGetPrototypeOf)                                                   \
+  CPP(ObjectSetPrototypeOf)                                                   \
   /* ES6 section 19.1.3.2 Object.prototype.hasOwnProperty */                  \
   TFJ(ObjectHasOwnProperty, 2)                                                \
   CPP(ObjectIs)                                                               \
@@ -536,6 +548,8 @@ namespace internal {
   /* ES6 section 19.1.3.6 Object.prototype.toString () */                     \
   TFJ(ObjectProtoToString, 1)                                                 \
   CPP(ObjectPrototypePropertyIsEnumerable)                                    \
+  CPP(ObjectPrototypeGetProto)                                                \
+  CPP(ObjectPrototypeSetProto)                                                \
   CPP(ObjectSeal)                                                             \
   CPP(ObjectValues)                                                           \
                                                                               \
@@ -573,19 +587,27 @@ namespace internal {
   CPP(RegExpCapture8Getter)                                                   \
   CPP(RegExpCapture9Getter)                                                   \
   CPP(RegExpConstructor)                                                      \
+  TFJ(RegExpInternalMatch, 3)                                                 \
   CPP(RegExpInputGetter)                                                      \
   CPP(RegExpInputSetter)                                                      \
   CPP(RegExpLastMatchGetter)                                                  \
   CPP(RegExpLastParenGetter)                                                  \
   CPP(RegExpLeftContextGetter)                                                \
+  CPP(RegExpPrototypeCompile)                                                 \
   TFJ(RegExpPrototypeExec, 2)                                                 \
   TFJ(RegExpPrototypeFlagsGetter, 1)                                          \
   TFJ(RegExpPrototypeGlobalGetter, 1)                                         \
   TFJ(RegExpPrototypeIgnoreCaseGetter, 1)                                     \
+  CPP(RegExpPrototypeMatch)                                                   \
   TFJ(RegExpPrototypeMultilineGetter, 1)                                      \
+  TFJ(RegExpPrototypeReplace, 3)                                              \
+  CPP(RegExpPrototypeSearch)                                                  \
   CPP(RegExpPrototypeSourceGetter)                                            \
   CPP(RegExpPrototypeSpeciesGetter)                                           \
+  CPP(RegExpPrototypeSplit)                                                   \
   TFJ(RegExpPrototypeStickyGetter, 1)                                         \
+  CPP(RegExpPrototypeTest)                                                    \
+  CPP(RegExpPrototypeToString)                                                \
   TFJ(RegExpPrototypeUnicodeGetter, 1)                                        \
   CPP(RegExpRightContextGetter)                                               \
                                                                               \
@@ -604,6 +626,12 @@ namespace internal {
   TFJ(StringPrototypeCharAt, 2)                                               \
   /* ES6 section 21.1.3.2 String.prototype.charCodeAt ( pos ) */              \
   TFJ(StringPrototypeCharCodeAt, 2)                                           \
+  /* ES6 section 21.1.3.6 */                                                  \
+  /* String.prototype.endsWith ( searchString [ , endPosition ] ) */          \
+  CPP(StringPrototypeEndsWith)                                                \
+  /* ES6 section 21.1.3.7 */                                                  \
+  /* String.prototype.includes ( searchString [ , position ] ) */             \
+  CPP(StringPrototypeIncludes)                                                \
   /* ES6 section 21.1.3.8 */                                                  \
   /* String.prototype.indexOf ( searchString [ , position ] ) */              \
   CPP(StringPrototypeIndexOf)                                                 \
@@ -618,6 +646,9 @@ namespace internal {
   TFJ(StringPrototypeSubstr, 3)                                               \
   /* ES6 section 21.1.3.19 String.prototype.substring ( start, end ) */       \
   TFJ(StringPrototypeSubstring, 3)                                            \
+  /* ES6 section 21.1.3.20 */                                                 \
+  /* String.prototype.startsWith ( searchString [ , position ] ) */           \
+  CPP(StringPrototypeStartsWith)                                              \
   /* ES6 section 21.1.3.25 String.prototype.toString () */                    \
   TFJ(StringPrototypeToString, 1)                                             \
   CPP(StringPrototypeTrim)                                                    \
@@ -648,7 +679,16 @@ namespace internal {
   /* ES6 section 22.2.3.3 get %TypedArray%.prototype.byteOffset */            \
   TFJ(TypedArrayPrototypeByteOffset, 1)                                       \
   /* ES6 section 22.2.3.18 get %TypedArray%.prototype.length */               \
-  TFJ(TypedArrayPrototypeLength, 1)
+  TFJ(TypedArrayPrototypeLength, 1)                                           \
+  /* ES6 #sec-%typedarray%.prototype.entries */                               \
+  TFJ(TypedArrayPrototypeEntries, 1)                                          \
+  /* ES6 #sec-%typedarray%.prototype.keys */                                  \
+  TFJ(TypedArrayPrototypeKeys, 1)                                             \
+  /* ES6 #sec-%typedarray%.prototype.values */                                \
+  TFJ(TypedArrayPrototypeValues, 1)                                           \
+                                                                              \
+  CPP(ModuleNamespaceIterator)                                                \
+  CPP(FixedArrayIteratorNext)
 
 #define IGNORE_BUILTIN(...)
 
@@ -692,7 +732,8 @@ class Builtins {
         builtin_count
   };
 
-#define DECLARE_BUILTIN_ACCESSOR(Name, ...) Handle<Code> Name();
+#define DECLARE_BUILTIN_ACCESSOR(Name, ...) \
+  V8_EXPORT_PRIVATE Handle<Code> Name();
   BUILTIN_LIST_ALL(DECLARE_BUILTIN_ACCESSOR)
 #undef DECLARE_BUILTIN_ACCESSOR
 

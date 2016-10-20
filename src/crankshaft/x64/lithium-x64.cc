@@ -219,13 +219,6 @@ void LHasInstanceTypeAndBranch::PrintDataTo(StringStream* stream) {
 }
 
 
-void LHasCachedArrayIndexAndBranch::PrintDataTo(StringStream* stream) {
-  stream->Add("if has_cached_array_index(");
-  value()->PrintTo(stream);
-  stream->Add(") then B%d else B%d", true_block_id(), false_block_id());
-}
-
-
 void LClassOfTestAndBranch::PrintDataTo(StringStream* stream) {
   stream->Add("if class_of_test(");
   value()->PrintTo(stream);
@@ -1704,24 +1697,6 @@ LInstruction* LChunkBuilder::DoHasInstanceTypeAndBranch(
   return new(zone()) LHasInstanceTypeAndBranch(value);
 }
 
-
-LInstruction* LChunkBuilder::DoGetCachedArrayIndex(
-    HGetCachedArrayIndex* instr)  {
-  DCHECK(instr->value()->representation().IsTagged());
-  LOperand* value = UseRegisterAtStart(instr->value());
-
-  return DefineAsRegister(new(zone()) LGetCachedArrayIndex(value));
-}
-
-
-LInstruction* LChunkBuilder::DoHasCachedArrayIndexAndBranch(
-    HHasCachedArrayIndexAndBranch* instr) {
-  DCHECK(instr->value()->representation().IsTagged());
-  LOperand* value = UseRegisterAtStart(instr->value());
-  return new(zone()) LHasCachedArrayIndexAndBranch(value);
-}
-
-
 LInstruction* LChunkBuilder::DoClassOfTestAndBranch(
     HClassOfTestAndBranch* instr) {
   LOperand* value = UseRegister(instr->value());
@@ -2115,19 +2090,6 @@ LInstruction* LChunkBuilder::DoLoadKeyed(HLoadKeyed* instr) {
     result = AssignEnvironment(result);
   }
   return result;
-}
-
-
-LInstruction* LChunkBuilder::DoLoadKeyedGeneric(HLoadKeyedGeneric* instr) {
-  LOperand* context = UseFixed(instr->context(), rsi);
-  LOperand* object =
-      UseFixed(instr->object(), LoadDescriptor::ReceiverRegister());
-  LOperand* key = UseFixed(instr->key(), LoadDescriptor::NameRegister());
-  LOperand* vector = FixedTemp(LoadWithVectorDescriptor::VectorRegister());
-
-  LLoadKeyedGeneric* result =
-      new(zone()) LLoadKeyedGeneric(context, object, key, vector);
-  return MarkAsCall(DefineFixed(result, rax), instr);
 }
 
 

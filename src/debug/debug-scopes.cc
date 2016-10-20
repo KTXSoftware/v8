@@ -87,13 +87,12 @@ ScopeIterator::ScopeIterator(Isolate* isolate, FrameInspector* frame_inspector,
 
   // Reparse the code and analyze the scopes.
   // Check whether we are in global, eval or function code.
-  Zone zone(isolate->allocator());
+  Zone zone(isolate->allocator(), ZONE_NAME);
   std::unique_ptr<ParseInfo> info;
   if (scope_info->scope_type() != FUNCTION_SCOPE) {
     // Global or eval code.
     Handle<Script> script(Script::cast(shared_info->script()));
     info.reset(new ParseInfo(&zone, script));
-    info->set_toplevel();
     if (scope_info->scope_type() == EVAL_SCOPE) {
       info->set_eval();
       if (!function->context()->IsNativeContext()) {
@@ -107,7 +106,7 @@ ScopeIterator::ScopeIterator(Isolate* isolate, FrameInspector* frame_inspector,
     }
   } else {
     // Inner function.
-    info.reset(new ParseInfo(&zone, function));
+    info.reset(new ParseInfo(&zone, shared_info));
   }
   if (Parser::ParseStatic(info.get()) && Rewriter::Rewrite(info.get())) {
     DeclarationScope* scope = info->literal()->scope();

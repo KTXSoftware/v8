@@ -54,11 +54,13 @@ WasmFunctionBuilder::WasmFunctionBuilder(WasmModuleBuilder* builder)
       func_index_(static_cast<uint32_t>(builder->functions_.size())),
       body_(builder->zone()),
       name_(builder->zone()),
+      exported_name_(builder->zone()),
       i32_temps_(builder->zone()),
       i64_temps_(builder->zone()),
       f32_temps_(builder->zone()),
       f64_temps_(builder->zone()),
-      direct_calls_(builder->zone()) {}
+      direct_calls_(builder->zone()),
+      asm_offsets_(builder->zone(), 8) {}
 
 void WasmFunctionBuilder::EmitVarInt(uint32_t val) {
   byte buffer[8];
@@ -139,15 +141,31 @@ void WasmFunctionBuilder::EmitDirectCallIndex(uint32_t index) {
   EmitCode(code, sizeof(code));
 }
 
-void WasmFunctionBuilder::SetExported() { exported_ = true; }
+void WasmFunctionBuilder::Export() { exported_ = true; }
 
-void WasmFunctionBuilder::SetName(const char* name, int name_length) {
-  name_.clear();
-  if (name_length > 0) {
-    for (int i = 0; i < name_length; ++i) {
-      name_.push_back(*(name + i));
-    }
-  }
+void WasmFunctionBuilder::ExportAs(Vector<const char> name) {
+  exported_ = true;
+  exported_name_.resize(name.length());
+  memcpy(exported_name_.data(), name.start(), name.length());
+}
+
+void WasmFunctionBuilder::SetName(Vector<const char> name) {
+  name_.resize(name.length());
+  memcpy(name_.data(), name.start(), name.length());
+}
+
+void WasmFunctionBuilder::AddAsmWasmOffset(int asm_position) {
+  // We only want to emit one mapping per byte offset:
+  DCHECK(asm_offsets_.size() == 0 || body_.size() > last_asm_byte_offset_);
+
+  DCHECK_LE(body_.size(), kMaxUInt32);
+  uint32_t byte_offset = static_cast<uint32_t>(body_.size());
+  asm_offsets_.write_u32v(byte_offset - last_asm_byte_offset_);
+  last_asm_byte_offset_ = byte_offset;
+
+  DCHECK_GE(asm_position, 0);
+  asm_offsets_.write_i32v(asm_position - last_asm_source_position_);
+  last_asm_source_position_ = asm_position;
 }
 
 void WasmFunctionBuilder::WriteSignature(ZoneBuffer& buffer) const {
@@ -156,10 +174,11 @@ void WasmFunctionBuilder::WriteSignature(ZoneBuffer& buffer) const {
 
 void WasmFunctionBuilder::WriteExport(ZoneBuffer& buffer) const {
   if (exported_) {
-    buffer.write_size(name_.size());
-    if (name_.size() > 0) {
-      buffer.write(reinterpret_cast<const byte*>(&name_[0]), name_.size());
-    }
+    const ZoneVector<char>* exported_name =
+        exported_name_.size() == 0 ? &name_ : &exported_name_;
+    buffer.write_size(exported_name->size());
+    buffer.write(reinterpret_cast<const byte*>(exported_name->data()),
+                 exported_name->size());
     buffer.write_u8(kExternalFunction);
     buffer.write_u32v(func_index_ +
                       static_cast<uint32_t>(builder_->imports_.size()));
@@ -182,6 +201,18 @@ void WasmFunctionBuilder::WriteBody(ZoneBuffer& buffer) const {
           call.direct_index + static_cast<uint32_t>(builder_->imports_.size()));
     }
   }
+}
+
+void WasmFunctionBuilder::WriteAsmWasmOffsetTable(ZoneBuffer& buffer) const {
+  if (asm_offsets_.size() == 0) {
+    buffer.write_size(0);
+    return;
+  }
+  buffer.write_size(asm_offsets_.size() + kInt32Size);
+  // Offset of the recorded byte offsets.
+  DCHECK_GE(kMaxUInt32, locals_.Size());
+  buffer.write_u32(static_cast<uint32_t>(locals_.Size()));
+  buffer.write(asm_offsets_.begin(), asm_offsets_.size());
 }
 
 WasmModuleBuilder::WasmModuleBuilder(Zone* zone)
@@ -488,6 +519,15 @@ void WasmModuleBuilder::WriteTo(ZoneBuffer& buffer) const {
       buffer.write_u8(0);
     }
     FixupSection(buffer, start);
+  }
+}
+
+void WasmModuleBuilder::WriteAsmJsOffsetTable(ZoneBuffer& buffer) const {
+  // == Emit asm.js offset table ===============================================
+  buffer.write_size(functions_.size());
+  // Emit the offset table per function.
+  for (auto function : functions_) {
+    function->WriteAsmWasmOffsetTable(buffer);
   }
 }
 }  // namespace wasm

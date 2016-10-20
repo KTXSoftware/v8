@@ -35,11 +35,6 @@
 // the V8 DLL USING_V8_SHARED needs to be defined. When either building the V8
 // static library or building a program which uses the V8 static library neither
 // BUILDING_V8_SHARED nor USING_V8_SHARED should be defined.
-#if defined(BUILDING_V8_SHARED) && defined(USING_V8_SHARED)
-#error both BUILDING_V8_SHARED and USING_V8_SHARED are set - please check the\
-  build configuration to ensure that at most one of these is set
-#endif
-
 #ifdef BUILDING_V8_SHARED
 # define V8_EXPORT __declspec(dllexport)
 #elif USING_V8_SHARED
@@ -1106,22 +1101,22 @@ class V8_EXPORT Module {
    */
   Local<String> GetModuleRequest(int i) const;
 
-  void SetEmbedderData(Local<Value> data);
-  Local<Value> GetEmbedderData() const;
+  /**
+   * Returns the identity hash for this object.
+   */
+  int GetIdentityHash() const;
 
   typedef MaybeLocal<Module> (*ResolveCallback)(Local<Context> context,
                                                 Local<String> specifier,
-                                                Local<Module> referrer,
-                                                Local<Value> data);
+                                                Local<Module> referrer);
 
   /**
    * ModuleDeclarationInstantiation
    *
    * Returns false if an exception occurred during instantiation.
    */
-  V8_WARN_UNUSED_RESULT bool Instantiate(
-      Local<Context> context, ResolveCallback callback,
-      Local<Value> callback_data = Local<Value>());
+  V8_WARN_UNUSED_RESULT bool Instantiate(Local<Context> context,
+                                         ResolveCallback callback);
 
   /**
    * ModuleEvaluation
@@ -3902,8 +3897,10 @@ class V8_EXPORT Proxy : public Object {
 class V8_EXPORT WasmCompiledModule : public Object {
  public:
   typedef std::pair<std::unique_ptr<const uint8_t[]>, size_t> SerializedModule;
-  // Get the uncompiled bytes that were used to compile this module.
-  Local<String> GetUncompiledBytes();
+  // A buffer that is owned by the caller.
+  typedef std::pair<const uint8_t*, size_t> CallerOwnedBuffer;
+  // Get the wasm-encoded bytes that were used to compile this module.
+  Local<String> GetWasmWireBytes();
 
   // Serialize the compiled module. The serialized data does not include the
   // uncompiled bytes.
@@ -3912,17 +3909,20 @@ class V8_EXPORT WasmCompiledModule : public Object {
   // TODO(mtrofin): Back-compat. Move to private once change lands in Chrome.
   // The resulting wasm setup won't have its uncompiled bytes available.
   static MaybeLocal<WasmCompiledModule> Deserialize(
-      Isolate* isolate, const SerializedModule& serialized_data);
+      Isolate* isolate, const SerializedModule& serialized_module);
   // If possible, deserialize the module, otherwise compile it from the provided
   // uncompiled bytes.
   static MaybeLocal<WasmCompiledModule> DeserializeOrCompile(
-      Isolate* isolate, const SerializedModule& serialized_data,
-      Local<String> uncompiled_bytes);
+      Isolate* isolate, const CallerOwnedBuffer& serialized_module,
+      const CallerOwnedBuffer& wire_bytes);
   V8_INLINE static WasmCompiledModule* Cast(Value* obj);
 
  private:
+  static MaybeLocal<WasmCompiledModule> Deserialize(
+      Isolate* isolate, const CallerOwnedBuffer& serialized_module);
   static MaybeLocal<WasmCompiledModule> Compile(Isolate* isolate,
-                                                Local<String> bytes);
+                                                const uint8_t* start,
+                                                size_t length);
   WasmCompiledModule();
   static void CheckCast(Value* obj);
 };
@@ -8303,8 +8303,8 @@ class Internals {
   static const int kNodeIsPartiallyDependentShift = 4;
   static const int kNodeIsActiveShift = 4;
 
-  static const int kJSObjectType = 0xb9;
-  static const int kJSApiObjectType = 0xb8;
+  static const int kJSObjectType = 0xbb;
+  static const int kJSApiObjectType = 0xba;
   static const int kFirstNonstringType = 0x80;
   static const int kOddballType = 0x83;
   static const int kForeignType = 0x87;

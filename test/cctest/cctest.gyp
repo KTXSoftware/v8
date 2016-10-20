@@ -203,6 +203,7 @@
       'trace-extension.cc',
       'trace-extension.h',
       'types-fuzz.h',
+      'wasm/test-managed.cc',
       'wasm/test-run-wasm.cc',
       'wasm/test-run-wasm-64.cc',
       'wasm/test-run-wasm-asmjs.cc',
@@ -234,7 +235,8 @@
       'test-macro-assembler-x64.cc',
       'test-log-stack-tracer.cc',
       'test-run-wasm-relocation-x64.cc',
-      'wasm/test-run-wasm-simd.cc'
+      'wasm/test-run-wasm-simd.cc',
+      'wasm/test-run-wasm-simd-lowering.cc',
     ],
     'cctest_sources_arm': [  ### gcmole(arch:arm) ###
       'test-assembler-arm.cc',
@@ -429,6 +431,7 @@
           # cctest can't be built against a shared library, so we need to
           # depend on the underlying static target in that case.
           'dependencies': ['../../src/v8.gyp:v8_maybe_snapshot'],
+          'defines': [ 'BUILDING_V8_SHARED', ]
         }, {
           'dependencies': ['../../src/v8.gyp:v8'],
         }],
@@ -473,15 +476,9 @@
       'target_name': 'generate-bytecode-expectations',
       'type': 'executable',
       'dependencies': [
+        '../../src/v8.gyp:v8',
+        '../../src/v8.gyp:v8_libbase',
         '../../src/v8.gyp:v8_libplatform',
-      ],
-      'conditions': [
-        ['component=="shared_library"', {
-          # Same as cctest, we need to depend on the underlying static target.
-          'dependencies': ['../../src/v8.gyp:v8_maybe_snapshot'],
-        }, {
-          'dependencies': ['../../src/v8.gyp:v8'],
-        }],
       ],
       'include_dirs+': [
         '../..',

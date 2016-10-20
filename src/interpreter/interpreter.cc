@@ -54,7 +54,7 @@ Interpreter::Interpreter(Isolate* isolate) : isolate_(isolate) {
 
 void Interpreter::Initialize() {
   if (IsDispatchTableInitialized()) return;
-  Zone zone(isolate_->allocator());
+  Zone zone(isolate_->allocator(), ZONE_NAME);
   HandleScope scope(isolate_);
 
   if (FLAG_trace_ignition_dispatches) {
@@ -960,7 +960,7 @@ void Interpreter::DoCompareOpWithFeedback(Token::Value compare_op,
   Variable var_type_feedback(assembler, MachineRepresentation::kWord32);
   Label lhs_is_smi(assembler), lhs_is_not_smi(assembler),
       gather_rhs_type(assembler), do_compare(assembler);
-  __ Branch(__ WordIsSmi(lhs), &lhs_is_smi, &lhs_is_not_smi);
+  __ Branch(__ TaggedIsSmi(lhs), &lhs_is_smi, &lhs_is_not_smi);
 
   __ Bind(&lhs_is_smi);
   var_type_feedback.Bind(
@@ -986,7 +986,7 @@ void Interpreter::DoCompareOpWithFeedback(Token::Value compare_op,
   __ Bind(&gather_rhs_type);
   {
     Label rhs_is_smi(assembler);
-    __ GotoIf(__ WordIsSmi(rhs), &rhs_is_smi);
+    __ GotoIf(__ TaggedIsSmi(rhs), &rhs_is_smi);
 
     Node* rhs_map = __ LoadMap(rhs);
     Node* rhs_type =
@@ -1131,13 +1131,13 @@ void Interpreter::DoBitwiseBinaryOp(Token::Value bitwise_op,
   }
 
   Node* result_type =
-      __ Select(__ WordIsSmi(result),
+      __ Select(__ TaggedIsSmi(result),
                 __ Int32Constant(BinaryOperationFeedback::kSignedSmall),
                 __ Int32Constant(BinaryOperationFeedback::kNumber));
 
   if (FLAG_debug_code) {
     Label ok(assembler);
-    __ GotoIf(__ WordIsSmi(result), &ok);
+    __ GotoIf(__ TaggedIsSmi(result), &ok);
     Node* result_map = __ LoadMap(result);
     __ AbortIfWordNotEqual(result_map, __ HeapNumberMapConstant(),
                            kExpectedHeapNumber);
@@ -1222,21 +1222,22 @@ void Interpreter::DoAddSmi(InterpreterAssembler* assembler) {
 
   // {right} is known to be a Smi.
   // Check if the {left} is a Smi take the fast path.
-  __ BranchIf(__ WordIsSmi(left), &fastpath, &slowpath);
+  __ Branch(__ TaggedIsSmi(left), &fastpath, &slowpath);
   __ Bind(&fastpath);
   {
     // Try fast Smi addition first.
-    Node* pair = __ SmiAddWithOverflow(left, right);
+    Node* pair = __ IntPtrAddWithOverflow(__ BitcastTaggedToWord(left),
+                                          __ BitcastTaggedToWord(right));
     Node* overflow = __ Projection(1, pair);
 
     // Check if the Smi additon overflowed.
     Label if_notoverflow(assembler);
-    __ BranchIf(overflow, &slowpath, &if_notoverflow);
+    __ Branch(overflow, &slowpath, &if_notoverflow);
     __ Bind(&if_notoverflow);
     {
       __ UpdateFeedback(__ Int32Constant(BinaryOperationFeedback::kSignedSmall),
                         type_feedback_vector, slot_index);
-      var_result.Bind(__ Projection(0, pair));
+      var_result.Bind(__ BitcastWordToTaggedSigned(__ Projection(0, pair)));
       __ Goto(&end);
     }
   }
@@ -1275,21 +1276,22 @@ void Interpreter::DoSubSmi(InterpreterAssembler* assembler) {
 
   // {right} is known to be a Smi.
   // Check if the {left} is a Smi take the fast path.
-  __ BranchIf(__ WordIsSmi(left), &fastpath, &slowpath);
+  __ Branch(__ TaggedIsSmi(left), &fastpath, &slowpath);
   __ Bind(&fastpath);
   {
     // Try fast Smi subtraction first.
-    Node* pair = __ SmiSubWithOverflow(left, right);
+    Node* pair = __ IntPtrSubWithOverflow(__ BitcastTaggedToWord(left),
+                                          __ BitcastTaggedToWord(right));
     Node* overflow = __ Projection(1, pair);
 
     // Check if the Smi subtraction overflowed.
     Label if_notoverflow(assembler);
-    __ BranchIf(overflow, &slowpath, &if_notoverflow);
+    __ Branch(overflow, &slowpath, &if_notoverflow);
     __ Bind(&if_notoverflow);
     {
       __ UpdateFeedback(__ Int32Constant(BinaryOperationFeedback::kSignedSmall),
                         type_feedback_vector, slot_index);
-      var_result.Bind(__ Projection(0, pair));
+      var_result.Bind(__ BitcastWordToTaggedSigned(__ Projection(0, pair)));
       __ Goto(&end);
     }
   }
@@ -1329,7 +1331,7 @@ void Interpreter::DoBitwiseOrSmi(InterpreterAssembler* assembler) {
   Node* value = __ Word32Or(lhs_value, rhs_value);
   Node* result = __ ChangeInt32ToTagged(value);
   Node* result_type =
-      __ Select(__ WordIsSmi(result),
+      __ Select(__ TaggedIsSmi(result),
                 __ Int32Constant(BinaryOperationFeedback::kSignedSmall),
                 __ Int32Constant(BinaryOperationFeedback::kNumber));
   __ UpdateFeedback(__ Word32Or(result_type, var_lhs_type_feedback.value()),
@@ -1357,7 +1359,7 @@ void Interpreter::DoBitwiseAndSmi(InterpreterAssembler* assembler) {
   Node* value = __ Word32And(lhs_value, rhs_value);
   Node* result = __ ChangeInt32ToTagged(value);
   Node* result_type =
-      __ Select(__ WordIsSmi(result),
+      __ Select(__ TaggedIsSmi(result),
                 __ Int32Constant(BinaryOperationFeedback::kSignedSmall),
                 __ Int32Constant(BinaryOperationFeedback::kNumber));
   __ UpdateFeedback(__ Word32Or(result_type, var_lhs_type_feedback.value()),
@@ -1387,7 +1389,7 @@ void Interpreter::DoShiftLeftSmi(InterpreterAssembler* assembler) {
   Node* value = __ Word32Shl(lhs_value, shift_count);
   Node* result = __ ChangeInt32ToTagged(value);
   Node* result_type =
-      __ Select(__ WordIsSmi(result),
+      __ Select(__ TaggedIsSmi(result),
                 __ Int32Constant(BinaryOperationFeedback::kSignedSmall),
                 __ Int32Constant(BinaryOperationFeedback::kNumber));
   __ UpdateFeedback(__ Word32Or(result_type, var_lhs_type_feedback.value()),
@@ -1417,7 +1419,7 @@ void Interpreter::DoShiftRightSmi(InterpreterAssembler* assembler) {
   Node* value = __ Word32Sar(lhs_value, shift_count);
   Node* result = __ ChangeInt32ToTagged(value);
   Node* result_type =
-      __ Select(__ WordIsSmi(result),
+      __ Select(__ TaggedIsSmi(result),
                 __ Int32Constant(BinaryOperationFeedback::kSignedSmall),
                 __ Int32Constant(BinaryOperationFeedback::kNumber));
   __ UpdateFeedback(__ Word32Or(result_type, var_lhs_type_feedback.value()),
@@ -1528,7 +1530,7 @@ void Interpreter::DoLogicalNot(InterpreterAssembler* assembler) {
   Label if_true(assembler), if_false(assembler), end(assembler);
   Node* true_value = __ BooleanConstant(true);
   Node* false_value = __ BooleanConstant(false);
-  __ BranchIfWordEqual(value, true_value, &if_true, &if_false);
+  __ Branch(__ WordEqual(value, true_value), &if_true, &if_false);
   __ Bind(&if_true);
   {
     result.Bind(false_value);
@@ -2062,7 +2064,7 @@ void Interpreter::DoCreateArrayLiteral(InterpreterAssembler* assembler) {
   Node* use_fast_shallow_clone = __ Word32And(
       bytecode_flags,
       __ Int32Constant(CreateArrayLiteralFlags::FastShallowCloneBit::kMask));
-  __ BranchIf(use_fast_shallow_clone, &fast_shallow_clone, &call_runtime);
+  __ Branch(use_fast_shallow_clone, &fast_shallow_clone, &call_runtime);
 
   __ Bind(&fast_shallow_clone);
   {
@@ -2107,7 +2109,7 @@ void Interpreter::DoCreateObjectLiteral(InterpreterAssembler* assembler) {
   Node* fast_clone_properties_count =
       __ BitFieldDecode<CreateObjectLiteralFlags::FastClonePropertiesCountBits>(
           bytecode_flags);
-  __ BranchIf(fast_clone_properties_count, &if_fast_clone, &if_not_fast_clone);
+  __ Branch(fast_clone_properties_count, &if_fast_clone, &if_not_fast_clone);
 
   __ Bind(&if_fast_clone);
   {
@@ -2254,7 +2256,7 @@ void Interpreter::DoCreateMappedArguments(InterpreterAssembler* assembler) {
   Node* duplicate_parameters_bit = __ Int32Constant(
       1 << SharedFunctionInfo::kHasDuplicateParametersBitWithinByte);
   Node* compare = __ Word32And(compiler_hints, duplicate_parameters_bit);
-  __ BranchIf(compare, &if_duplicate_parameters, &if_not_duplicate_parameters);
+  __ Branch(compare, &if_duplicate_parameters, &if_not_duplicate_parameters);
 
   __ Bind(&if_not_duplicate_parameters);
   {
@@ -2310,7 +2312,7 @@ void Interpreter::DoStackCheck(InterpreterAssembler* assembler) {
   Label ok(assembler), stack_check_interrupt(assembler, Label::kDeferred);
 
   Node* interrupt = __ StackCheckTriggeredInterrupt();
-  __ BranchIf(interrupt, &stack_check_interrupt, &ok);
+  __ Branch(interrupt, &stack_check_interrupt, &ok);
 
   __ Bind(&ok);
   __ Dispatch();
@@ -2483,7 +2485,7 @@ void Interpreter::DoForInNext(InterpreterAssembler* assembler) {
   // Check if we can use the for-in fast path potentially using the enum cache.
   Label if_fast(assembler), if_slow(assembler, Label::kDeferred);
   Node* receiver_map = __ LoadObjectField(receiver, HeapObject::kMapOffset);
-  __ BranchIfWordEqual(receiver_map, cache_type, &if_fast, &if_slow);
+  __ Branch(__ WordEqual(receiver_map, cache_type), &if_fast, &if_slow);
   __ Bind(&if_fast);
   {
     // Enum cache in use for {receiver}, the {key} is definitely valid.
@@ -2520,7 +2522,7 @@ void Interpreter::DoForInContinue(InterpreterAssembler* assembler) {
 
   // Check if {index} is at {cache_length} already.
   Label if_true(assembler), if_false(assembler), end(assembler);
-  __ BranchIfWordEqual(index, cache_length, &if_true, &if_false);
+  __ Branch(__ WordEqual(index, cache_length), &if_true, &if_false);
   __ Bind(&if_true);
   {
     __ SetAccumulator(__ BooleanConstant(false));
@@ -2591,7 +2593,7 @@ void Interpreter::DoSuspendGenerator(InterpreterAssembler* assembler) {
   STATIC_ASSERT(StepFrame > StepNext);
   STATIC_ASSERT(LastStepAction == StepFrame);
   Node* step_next = __ Int32Constant(StepNext);
-  __ BranchIfInt32LessThanOrEqual(step_next, step_action, &if_stepping, &ok);
+  __ Branch(__ Int32LessThanOrEqual(step_next, step_action), &if_stepping, &ok);
   __ Bind(&ok);
 
   Node* array =

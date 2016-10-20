@@ -259,6 +259,10 @@ bool BytecodeGraphBuilder::Environment::IsLivenessBlockConsistent() const {
 }
 
 Node* BytecodeGraphBuilder::Environment::LookupAccumulator() const {
+  DCHECK(IsLivenessBlockConsistent());
+  if (liveness_block() != nullptr) {
+    liveness_block()->LookupAccumulator();
+  }
   return values()->at(accumulator_base_);
 }
 
@@ -294,6 +298,10 @@ void BytecodeGraphBuilder::Environment::BindAccumulator(
     Node* node, FrameStateBeforeAndAfter* states) {
   if (states) {
     states->AddToNode(node, OutputFrameStateCombine::PokeAt(0));
+  }
+  DCHECK(IsLivenessBlockConsistent());
+  if (liveness_block() != nullptr) {
+    liveness_block()->BindAccumulator();
   }
   values()->at(accumulator_base_) = node;
 }
@@ -587,10 +595,9 @@ bool BytecodeGraphBuilder::Environment::StateValuesAreUpToDate(
                                 1, output_poke_start, output_poke_end);
 }
 
-BytecodeGraphBuilder::BytecodeGraphBuilder(Zone* local_zone,
-                                           CompilationInfo* info,
-                                           JSGraph* jsgraph,
-                                           float invocation_frequency)
+BytecodeGraphBuilder::BytecodeGraphBuilder(
+    Zone* local_zone, CompilationInfo* info, JSGraph* jsgraph,
+    float invocation_frequency, SourcePositionTable* source_positions)
     : local_zone_(local_zone),
       jsgraph_(jsgraph),
       invocation_frequency_(invocation_frequency),
@@ -613,8 +620,9 @@ BytecodeGraphBuilder::BytecodeGraphBuilder(Zone* local_zone,
                                     info->is_deoptimization_enabled()),
       state_values_cache_(jsgraph),
       liveness_analyzer_(
-          static_cast<size_t>(bytecode_array()->register_count()), local_zone) {
-}
+          static_cast<size_t>(bytecode_array()->register_count()), true,
+          local_zone),
+      source_positions_(source_positions) {}
 
 Node* BytecodeGraphBuilder::GetNewTarget() {
   if (!new_target_.is_set()) {
@@ -699,7 +707,7 @@ void BytecodeGraphBuilder::ClearNonLiveSlotsInFrameStates() {
   }
   NonLiveFrameStateSlotReplacer replacer(
       &state_values_cache_, jsgraph()->OptimizedOutConstant(),
-      liveness_analyzer()->local_count(), local_zone());
+      liveness_analyzer()->local_count(), true, local_zone());
   liveness_analyzer()->Run(&replacer);
   if (FLAG_trace_environment_liveness) {
     OFStream os(stdout);
@@ -714,11 +722,16 @@ void BytecodeGraphBuilder::VisitBytecodes() {
   loop_analysis.Analyze();
   set_branch_analysis(&analysis);
   set_loop_analysis(&loop_analysis);
+
   interpreter::BytecodeArrayIterator iterator(bytecode_array());
   set_bytecode_iterator(&iterator);
+  SourcePositionTableIterator source_position_iterator(
+      bytecode_array()->source_position_table());
+
   BuildOSRNormalEntryPoint();
   while (!iterator.done()) {
     int current_offset = iterator.current_offset();
+    UpdateCurrentSourcePosition(&source_position_iterator, current_offset);
     EnterAndExitExceptionHandlers(current_offset);
     SwitchToMergeEnvironment(current_offset);
     if (environment() != nullptr) {
@@ -736,6 +749,7 @@ void BytecodeGraphBuilder::VisitBytecodes() {
     }
     iterator.Advance();
   }
+
   set_branch_analysis(nullptr);
   set_bytecode_iterator(nullptr);
   DCHECK(exception_handlers_.empty());
@@ -1513,11 +1527,8 @@ CompareOperationHint BytecodeGraphBuilder::GetCompareOperationHint() {
 }
 
 float BytecodeGraphBuilder::ComputeCallFrequency(int slot_id) const {
-  if (slot_id >= TypeFeedbackVector::kReservedIndexCount) {
-    CallICNexus nexus(feedback_vector(), feedback_vector()->ToSlot(slot_id));
-    return nexus.ComputeCallFrequency() * invocation_frequency_;
-  }
-  return 0.0f;
+  CallICNexus nexus(feedback_vector(), feedback_vector()->ToSlot(slot_id));
+  return nexus.ComputeCallFrequency() * invocation_frequency_;
 }
 
 void BytecodeGraphBuilder::VisitAdd() {
@@ -2254,6 +2265,21 @@ Node* BytecodeGraphBuilder::MergeValue(Node* value, Node* other,
     value->ReplaceInput(inputs - 1, other);
   }
   return value;
+}
+
+void BytecodeGraphBuilder::UpdateCurrentSourcePosition(
+    SourcePositionTableIterator* it, int offset) {
+  // TODO(neis): Remove this once inlining supports source positions.
+  if (source_positions_ == nullptr) return;
+
+  if (it->done()) return;
+
+  if (it->code_offset() == offset) {
+    source_positions_->set_current_position(it->source_position());
+    it->Advance();
+  } else {
+    DCHECK_GT(it->code_offset(), offset);
+  }
 }
 
 }  // namespace compiler

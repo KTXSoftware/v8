@@ -1171,8 +1171,9 @@ bool Heap::ReserveSpace(Reservation* reservations, List<Address>* maps) {
         for (auto& chunk : *reservation) {
           AllocationResult allocation;
           int size = chunk.size;
-          DCHECK_LE(size, MemoryAllocator::PageAreaSize(
-                              static_cast<AllocationSpace>(space)));
+          DCHECK_LE(static_cast<size_t>(size),
+                    MemoryAllocator::PageAreaSize(
+                        static_cast<AllocationSpace>(space)));
           if (space == NEW_SPACE) {
             allocation = new_space()->AllocateRawUnaligned(size);
           } else {
@@ -1463,9 +1464,6 @@ void Heap::MarkCompactEpilogue() {
 
 
 void Heap::MarkCompactPrologue() {
-  // At any old GC clear the keyed lookup cache to enable collection of unused
-  // maps.
-  isolate_->keyed_lookup_cache()->Clear();
   isolate_->context_slot_cache()->Clear();
   isolate_->descriptor_lookup_cache()->Clear();
   RegExpResultsCache::Clear(string_split_cache());
@@ -2886,9 +2884,6 @@ void Heap::CreateInitialObjects() {
 
   set_noscript_shared_function_infos(Smi::kZero);
 
-  // Initialize keyed lookup cache.
-  isolate_->keyed_lookup_cache()->Clear();
-
   // Initialize context slot cache.
   isolate_->context_slot_cache()->Clear();
 
@@ -4201,8 +4196,7 @@ void Heap::FinalizeIncrementalMarkingIfComplete(
        (!incremental_marking()->finalize_marking_completed() &&
         MarkingDequesAreEmpty()))) {
     FinalizeIncrementalMarking(gc_reason);
-  } else if (incremental_marking()->IsComplete() ||
-             (mark_compact_collector()->marking_deque()->IsEmpty())) {
+  } else if (incremental_marking()->IsComplete() || MarkingDequesAreEmpty()) {
     CollectAllGarbage(current_gc_flags_, gc_reason);
   }
 }

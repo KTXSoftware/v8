@@ -26,12 +26,10 @@ class Utf16CharacterStream;
 class Zone;
 
 // A container for the inputs, configuration options, and outputs of parsing.
-class ParseInfo {
+class V8_EXPORT_PRIVATE ParseInfo {
  public:
   explicit ParseInfo(Zone* zone);
-  ParseInfo(Zone* zone, Handle<JSFunction> function);
   ParseInfo(Zone* zone, Handle<Script> script);
-  // TODO(all) Only used via Debug::FindSharedFunctionInfoInScript, remove?
   ParseInfo(Zone* zone, Handle<SharedFunctionInfo> shared);
 
   ~ParseInfo();
@@ -45,7 +43,6 @@ class ParseInfo {
   void setter(bool val) { SetFlag(flag, val); }
 
   FLAG_ACCESSOR(kToplevel, is_toplevel, set_toplevel)
-  FLAG_ACCESSOR(kLazy, is_lazy, set_lazy)
   FLAG_ACCESSOR(kEval, is_eval, set_eval)
   FLAG_ACCESSOR(kStrictMode, is_strict_mode, set_strict_mode)
   FLAG_ACCESSOR(kNative, is_native, set_native)
@@ -100,6 +97,9 @@ class ParseInfo {
     return compile_options_;
   }
   void set_compile_options(ScriptCompiler::CompileOptions compile_options) {
+    if (compile_options == ScriptCompiler::kConsumeParserCache) {
+      set_allow_lazy_parsing();
+    }
     compile_options_ = compile_options;
   }
 

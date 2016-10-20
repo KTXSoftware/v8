@@ -13,10 +13,8 @@ var ArrayJoin;
 var GetSubstitution;
 var GlobalRegExp = global.RegExp;
 var GlobalString = global.String;
-var IsRegExp;
 var MaxSimple;
 var MinSimple;
-var RegExpInitialize;
 var matchSymbol = utils.ImportNow("match_symbol");
 var replaceSymbol = utils.ImportNow("replace_symbol");
 var searchSymbol = utils.ImportNow("search_symbol");
@@ -25,10 +23,8 @@ var splitSymbol = utils.ImportNow("split_symbol");
 utils.Import(function(from) {
   ArrayJoin = from.ArrayJoin;
   GetSubstitution = from.GetSubstitution;
-  IsRegExp = from.IsRegExp;
   MaxSimple = from.MaxSimple;
   MinSimple = from.MinSimple;
-  RegExpInitialize = from.RegExpInitialize;
 });
 
 //-------------------------------------------------------------------
@@ -60,8 +56,7 @@ function StringMatchJS(pattern) {
   var subject = TO_STRING(this);
 
   // Equivalent to RegExpCreate (ES#sec-regexpcreate)
-  var regexp = %_NewObject(GlobalRegExp, GlobalRegExp);
-  RegExpInitialize(regexp, pattern);
+  var regexp = %RegExpCreate(pattern);
   return regexp[matchSymbol](subject);
 }
 
@@ -143,8 +138,7 @@ function StringSearch(pattern) {
   var subject = TO_STRING(this);
 
   // Equivalent to RegExpCreate (ES#sec-regexpcreate)
-  var regexp = %_NewObject(GlobalRegExp, GlobalRegExp);
-  RegExpInitialize(regexp, pattern);
+  var regexp = %RegExpCreate(pattern);
   return %_Call(regexp[searchSymbol], regexp, subject);
 }
 
@@ -380,87 +374,6 @@ function StringRepeat(count) {
 }
 
 
-// ES6 draft 04-05-14, section 21.1.3.18
-function StringStartsWith(searchString, position) {  // length == 1
-  CHECK_OBJECT_COERCIBLE(this, "String.prototype.startsWith");
-
-  var s = TO_STRING(this);
-
-  if (IsRegExp(searchString)) {
-    throw %make_type_error(kFirstArgumentNotRegExp, "String.prototype.startsWith");
-  }
-
-  var ss = TO_STRING(searchString);
-  var pos = TO_INTEGER(position);
-
-  var s_len = s.length;
-  var start = MinSimple(MaxSimple(pos, 0), s_len);
-  var ss_len = ss.length;
-  if (ss_len + start > s_len) {
-    return false;
-  }
-
-  return %_SubString(s, start, start + ss_len) === ss;
-}
-
-%FunctionSetLength(StringStartsWith, 1);
-
-
-// ES6 draft 04-05-14, section 21.1.3.7
-function StringEndsWith(searchString, position) {  // length == 1
-  CHECK_OBJECT_COERCIBLE(this, "String.prototype.endsWith");
-
-  var s = TO_STRING(this);
-
-  if (IsRegExp(searchString)) {
-    throw %make_type_error(kFirstArgumentNotRegExp, "String.prototype.endsWith");
-  }
-
-  var ss = TO_STRING(searchString);
-  var s_len = s.length;
-  var pos = !IS_UNDEFINED(position) ? TO_INTEGER(position) : s_len
-
-  var end = MinSimple(MaxSimple(pos, 0), s_len);
-  var ss_len = ss.length;
-  var start = end - ss_len;
-  if (start < 0) {
-    return false;
-  }
-
-  return %_SubString(s, start, start + ss_len) === ss;
-}
-
-%FunctionSetLength(StringEndsWith, 1);
-
-
-// ES6 draft 04-05-14, section 21.1.3.6
-function StringIncludes(searchString, position) {  // length == 1
-  CHECK_OBJECT_COERCIBLE(this, "String.prototype.includes");
-
-  var string = TO_STRING(this);
-
-  if (IsRegExp(searchString)) {
-    throw %make_type_error(kFirstArgumentNotRegExp, "String.prototype.includes");
-  }
-
-  searchString = TO_STRING(searchString);
-  var pos = TO_INTEGER(position);
-
-  var stringLength = string.length;
-  if (pos < 0) pos = 0;
-  if (pos > stringLength) pos = stringLength;
-  var searchStringLength = searchString.length;
-
-  if (searchStringLength + pos > stringLength) {
-    return false;
-  }
-
-  return %StringIndexOf(string, searchString, pos) !== -1;
-}
-
-%FunctionSetLength(StringIncludes, 1);
-
-
 // ES6 Draft 05-22-2014, section 21.1.3.3
 function StringCodePointAt(pos) {
   CHECK_OBJECT_COERCIBLE(this, "String.prototype.codePointAt");
@@ -518,15 +431,12 @@ utils.InstallFunctions(GlobalString, DONT_ENUM, [
 utils.InstallFunctions(GlobalString.prototype, DONT_ENUM, [
   "codePointAt", StringCodePointAt,
   "concat", StringConcat,
-  "endsWith", StringEndsWith,
-  "includes", StringIncludes,
   "match", StringMatchJS,
   "repeat", StringRepeat,
   "replace", StringReplace,
   "search", StringSearch,
   "slice", StringSlice,
   "split", StringSplitJS,
-  "startsWith", StringStartsWith,
   "toLowerCase", StringToLowerCaseJS,
   "toLocaleLowerCase", StringToLocaleLowerCase,
   "toUpperCase", StringToUpperCaseJS,

@@ -26,8 +26,7 @@ FunctionTester::FunctionTester(const char* source, uint32_t flags)
       function((FLAG_allow_natives_syntax = true, NewFunction(source))),
       flags_(flags) {
   Compile(function);
-  const uint32_t supported_flags = CompilationInfo::kNativeContextSpecializing |
-                                   CompilationInfo::kInliningEnabled;
+  const uint32_t supported_flags = CompilationInfo::kInliningEnabled;
   CHECK_EQ(0u, flags_ & ~supported_flags);
 }
 
@@ -158,15 +157,12 @@ Handle<JSFunction> FunctionTester::ForMachineGraph(Graph* graph,
 }
 
 Handle<JSFunction> FunctionTester::Compile(Handle<JSFunction> function) {
-  Zone zone(function->GetIsolate()->allocator());
-  ParseInfo parse_info(&zone, function);
+  Zone zone(function->GetIsolate()->allocator(), ZONE_NAME);
+  ParseInfo parse_info(&zone, handle(function->shared()));
   CompilationInfo info(&parse_info, function);
 
   info.SetOptimizing();
   info.MarkAsDeoptimizationEnabled();
-  if (flags_ & CompilationInfo::kNativeContextSpecializing) {
-    info.MarkAsNativeContextSpecializing();
-  }
   if (flags_ & CompilationInfo::kInliningEnabled) {
     info.MarkAsInliningEnabled();
   }
@@ -189,8 +185,8 @@ Handle<JSFunction> FunctionTester::Compile(Handle<JSFunction> function) {
 // Compile the given machine graph instead of the source of the function
 // and replace the JSFunction's code with the result.
 Handle<JSFunction> FunctionTester::CompileGraph(Graph* graph) {
-  Zone zone(function->GetIsolate()->allocator());
-  ParseInfo parse_info(&zone, function);
+  Zone zone(function->GetIsolate()->allocator(), ZONE_NAME);
+  ParseInfo parse_info(&zone, handle(function->shared()));
   CompilationInfo info(&parse_info, function);
 
   CHECK(Parser::ParseStatic(info.parse_info()));

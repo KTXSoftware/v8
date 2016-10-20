@@ -22,7 +22,7 @@ void Builtins::Generate_NumberIsFinite(CodeStubAssembler* assembler) {
   Label return_true(assembler), return_false(assembler);
 
   // Check if {number} is a Smi.
-  assembler->GotoIf(assembler->WordIsSmi(number), &return_true);
+  assembler->GotoIf(assembler->TaggedIsSmi(number), &return_true);
 
   // Check if {number} is a HeapNumber.
   assembler->GotoUnless(
@@ -53,7 +53,7 @@ void Builtins::Generate_NumberIsInteger(CodeStubAssembler* assembler) {
   Label return_true(assembler), return_false(assembler);
 
   // Check if {number} is a Smi.
-  assembler->GotoIf(assembler->WordIsSmi(number), &return_true);
+  assembler->GotoIf(assembler->TaggedIsSmi(number), &return_true);
 
   // Check if {number} is a HeapNumber.
   assembler->GotoUnless(
@@ -68,9 +68,10 @@ void Builtins::Generate_NumberIsInteger(CodeStubAssembler* assembler) {
   Node* integer = assembler->Float64Trunc(number_value);
 
   // Check if {number}s value matches the integer (ruling out the infinities).
-  assembler->BranchIfFloat64Equal(assembler->Float64Sub(number_value, integer),
-                                  assembler->Float64Constant(0.0), &return_true,
-                                  &return_false);
+  assembler->Branch(
+      assembler->Float64Equal(assembler->Float64Sub(number_value, integer),
+                              assembler->Float64Constant(0.0)),
+      &return_true, &return_false);
 
   assembler->Bind(&return_true);
   assembler->Return(assembler->BooleanConstant(true));
@@ -89,7 +90,7 @@ void Builtins::Generate_NumberIsNaN(CodeStubAssembler* assembler) {
   Label return_true(assembler), return_false(assembler);
 
   // Check if {number} is a Smi.
-  assembler->GotoIf(assembler->WordIsSmi(number), &return_false);
+  assembler->GotoIf(assembler->TaggedIsSmi(number), &return_false);
 
   // Check if {number} is a HeapNumber.
   assembler->GotoUnless(
@@ -118,7 +119,7 @@ void Builtins::Generate_NumberIsSafeInteger(CodeStubAssembler* assembler) {
   Label return_true(assembler), return_false(assembler);
 
   // Check if {number} is a Smi.
-  assembler->GotoIf(assembler->WordIsSmi(number), &return_true);
+  assembler->GotoIf(assembler->TaggedIsSmi(number), &return_true);
 
   // Check if {number} is a HeapNumber.
   assembler->GotoUnless(
@@ -139,9 +140,10 @@ void Builtins::Generate_NumberIsSafeInteger(CodeStubAssembler* assembler) {
       &return_false);
 
   // Check if the {integer} value is in safe integer range.
-  assembler->BranchIfFloat64LessThanOrEqual(
-      assembler->Float64Abs(integer),
-      assembler->Float64Constant(kMaxSafeInteger), &return_true, &return_false);
+  assembler->Branch(assembler->Float64LessThanOrEqual(
+                        assembler->Float64Abs(integer),
+                        assembler->Float64Constant(kMaxSafeInteger)),
+                    &return_true, &return_false);
 
   assembler->Bind(&return_true);
   assembler->Return(assembler->BooleanConstant(true));
@@ -170,7 +172,7 @@ void Builtins::Generate_NumberParseFloat(CodeStubAssembler* assembler) {
 
     // Check if the {input} is a HeapObject or a Smi.
     Label if_inputissmi(assembler), if_inputisnotsmi(assembler);
-    assembler->Branch(assembler->WordIsSmi(input), &if_inputissmi,
+    assembler->Branch(assembler->TaggedIsSmi(input), &if_inputissmi,
                       &if_inputisnotsmi);
 
     assembler->Bind(&if_inputissmi);
@@ -253,6 +255,102 @@ void Builtins::Generate_NumberParseFloat(CodeStubAssembler* assembler) {
         }
       }
     }
+  }
+}
+
+// ES6 section 20.1.2.13 Number.parseInt ( string, radix )
+void Builtins::Generate_NumberParseInt(CodeStubAssembler* assembler) {
+  typedef CodeStubAssembler::Label Label;
+  typedef compiler::Node Node;
+
+  Node* input = assembler->Parameter(1);
+  Node* radix = assembler->Parameter(2);
+  Node* context = assembler->Parameter(5);
+
+  // Check if {radix} is treated as 10 (i.e. undefined, 0 or 10).
+  Label if_radix10(assembler), if_generic(assembler, Label::kDeferred);
+  assembler->GotoIf(assembler->WordEqual(radix, assembler->UndefinedConstant()),
+                    &if_radix10);
+  assembler->GotoIf(
+      assembler->WordEqual(radix, assembler->SmiConstant(Smi::FromInt(10))),
+      &if_radix10);
+  assembler->GotoIf(
+      assembler->WordEqual(radix, assembler->SmiConstant(Smi::FromInt(0))),
+      &if_radix10);
+  assembler->Goto(&if_generic);
+
+  assembler->Bind(&if_radix10);
+  {
+    // Check if we can avoid the ToString conversion on {input}.
+    Label if_inputissmi(assembler), if_inputisheapnumber(assembler),
+        if_inputisstring(assembler);
+    assembler->GotoIf(assembler->TaggedIsSmi(input), &if_inputissmi);
+    Node* input_map = assembler->LoadMap(input);
+    assembler->GotoIf(
+        assembler->WordEqual(input_map, assembler->HeapNumberMapConstant()),
+        &if_inputisheapnumber);
+    Node* input_instance_type = assembler->LoadMapInstanceType(input_map);
+    assembler->Branch(assembler->IsStringInstanceType(input_instance_type),
+                      &if_inputisstring, &if_generic);
+
+    assembler->Bind(&if_inputissmi);
+    {
+      // Just return the {input}.
+      assembler->Return(input);
+    }
+
+    assembler->Bind(&if_inputisheapnumber);
+    {
+      // Check if the {input} value is in Signed32 range.
+      Label if_inputissigned32(assembler);
+      Node* input_value = assembler->LoadHeapNumberValue(input);
+      Node* input_value32 = assembler->TruncateFloat64ToWord32(input_value);
+      assembler->GotoIf(
+          assembler->Float64Equal(
+              input_value, assembler->ChangeInt32ToFloat64(input_value32)),
+          &if_inputissigned32);
+
+      // Check if the absolute {input} value is in the ]0.01,1e9[ range.
+      Node* input_value_abs = assembler->Float64Abs(input_value);
+
+      assembler->GotoUnless(
+          assembler->Float64LessThan(input_value_abs,
+                                     assembler->Float64Constant(1e9)),
+          &if_generic);
+      assembler->Branch(assembler->Float64LessThan(
+                            assembler->Float64Constant(0.01), input_value_abs),
+                        &if_inputissigned32, &if_generic);
+
+      // Return the truncated int32 value, and return the tagged result.
+      assembler->Bind(&if_inputissigned32);
+      Node* result = assembler->ChangeInt32ToTagged(input_value32);
+      assembler->Return(result);
+    }
+
+    assembler->Bind(&if_inputisstring);
+    {
+      // Check if the String {input} has a cached array index.
+      Node* input_hash = assembler->LoadNameHashField(input);
+      Node* input_bit = assembler->Word32And(
+          input_hash,
+          assembler->Int32Constant(String::kContainsCachedArrayIndexMask));
+      assembler->GotoIf(
+          assembler->Word32NotEqual(input_bit, assembler->Int32Constant(0)),
+          &if_generic);
+
+      // Return the cached array index as result.
+      Node* input_index =
+          assembler->BitFieldDecode<String::ArrayIndexValueBits>(input_hash);
+      Node* result = assembler->SmiTag(input_index);
+      assembler->Return(result);
+    }
+  }
+
+  assembler->Bind(&if_generic);
+  {
+    Node* result =
+        assembler->CallRuntime(Runtime::kStringParseInt, context, input, radix);
+    assembler->Return(result);
   }
 }
 
@@ -511,19 +609,22 @@ void Builtins::Generate_Add(CodeStubAssembler* assembler) {
 
     // Check if the {lhs} is a Smi or a HeapObject.
     Label if_lhsissmi(assembler), if_lhsisnotsmi(assembler);
-    assembler->Branch(assembler->WordIsSmi(lhs), &if_lhsissmi, &if_lhsisnotsmi);
+    assembler->Branch(assembler->TaggedIsSmi(lhs), &if_lhsissmi,
+                      &if_lhsisnotsmi);
 
     assembler->Bind(&if_lhsissmi);
     {
       // Check if the {rhs} is also a Smi.
       Label if_rhsissmi(assembler), if_rhsisnotsmi(assembler);
-      assembler->Branch(assembler->WordIsSmi(rhs), &if_rhsissmi,
+      assembler->Branch(assembler->TaggedIsSmi(rhs), &if_rhsissmi,
                         &if_rhsisnotsmi);
 
       assembler->Bind(&if_rhsissmi);
       {
         // Try fast Smi addition first.
-        Node* pair = assembler->SmiAddWithOverflow(lhs, rhs);
+        Node* pair = assembler->IntPtrAddWithOverflow(
+            assembler->BitcastTaggedToWord(lhs),
+            assembler->BitcastTaggedToWord(rhs));
         Node* overflow = assembler->Projection(1, pair);
 
         // Check if the Smi additon overflowed.
@@ -538,7 +639,8 @@ void Builtins::Generate_Add(CodeStubAssembler* assembler) {
         }
 
         assembler->Bind(&if_notoverflow);
-        var_result.Bind(assembler->Projection(0, pair));
+        var_result.Bind(assembler->BitcastWordToTaggedSigned(
+            assembler->Projection(0, pair)));
         assembler->Goto(&end);
       }
 
@@ -630,7 +732,7 @@ void Builtins::Generate_Add(CodeStubAssembler* assembler) {
       {
         // Check if {rhs} is a Smi.
         Label if_rhsissmi(assembler), if_rhsisnotsmi(assembler);
-        assembler->Branch(assembler->WordIsSmi(rhs), &if_rhsissmi,
+        assembler->Branch(assembler->TaggedIsSmi(rhs), &if_rhsissmi,
                           &if_rhsisnotsmi);
 
         assembler->Bind(&if_rhsissmi);
@@ -872,19 +974,22 @@ void Builtins::Generate_Subtract(CodeStubAssembler* assembler) {
 
     // Check if the {lhs} is a Smi or a HeapObject.
     Label if_lhsissmi(assembler), if_lhsisnotsmi(assembler);
-    assembler->Branch(assembler->WordIsSmi(lhs), &if_lhsissmi, &if_lhsisnotsmi);
+    assembler->Branch(assembler->TaggedIsSmi(lhs), &if_lhsissmi,
+                      &if_lhsisnotsmi);
 
     assembler->Bind(&if_lhsissmi);
     {
       // Check if the {rhs} is also a Smi.
       Label if_rhsissmi(assembler), if_rhsisnotsmi(assembler);
-      assembler->Branch(assembler->WordIsSmi(rhs), &if_rhsissmi,
+      assembler->Branch(assembler->TaggedIsSmi(rhs), &if_rhsissmi,
                         &if_rhsisnotsmi);
 
       assembler->Bind(&if_rhsissmi);
       {
         // Try a fast Smi subtraction first.
-        Node* pair = assembler->SmiSubWithOverflow(lhs, rhs);
+        Node* pair = assembler->IntPtrSubWithOverflow(
+            assembler->BitcastTaggedToWord(lhs),
+            assembler->BitcastTaggedToWord(rhs));
         Node* overflow = assembler->Projection(1, pair);
 
         // Check if the Smi subtraction overflowed.
@@ -900,7 +1005,8 @@ void Builtins::Generate_Subtract(CodeStubAssembler* assembler) {
         }
 
         assembler->Bind(&if_notoverflow);
-        var_result.Bind(assembler->Projection(0, pair));
+        var_result.Bind(assembler->BitcastWordToTaggedSigned(
+            assembler->Projection(0, pair)));
         assembler->Goto(&end);
       }
 
@@ -950,7 +1056,7 @@ void Builtins::Generate_Subtract(CodeStubAssembler* assembler) {
       {
         // Check if the {rhs} is a Smi.
         Label if_rhsissmi(assembler), if_rhsisnotsmi(assembler);
-        assembler->Branch(assembler->WordIsSmi(rhs), &if_rhsissmi,
+        assembler->Branch(assembler->TaggedIsSmi(rhs), &if_rhsissmi,
                           &if_rhsisnotsmi);
 
         assembler->Bind(&if_rhsissmi);
@@ -1045,12 +1151,13 @@ void Builtins::Generate_Multiply(CodeStubAssembler* assembler) {
     Node* rhs = var_rhs.value();
 
     Label lhs_is_smi(assembler), lhs_is_not_smi(assembler);
-    assembler->Branch(assembler->WordIsSmi(lhs), &lhs_is_smi, &lhs_is_not_smi);
+    assembler->Branch(assembler->TaggedIsSmi(lhs), &lhs_is_smi,
+                      &lhs_is_not_smi);
 
     assembler->Bind(&lhs_is_smi);
     {
       Label rhs_is_smi(assembler), rhs_is_not_smi(assembler);
-      assembler->Branch(assembler->WordIsSmi(rhs), &rhs_is_smi,
+      assembler->Branch(assembler->TaggedIsSmi(rhs), &rhs_is_smi,
                         &rhs_is_not_smi);
 
       assembler->Bind(&rhs_is_smi);
@@ -1103,7 +1210,7 @@ void Builtins::Generate_Multiply(CodeStubAssembler* assembler) {
       {
         // Check if {rhs} is a Smi.
         Label rhs_is_smi(assembler), rhs_is_not_smi(assembler);
-        assembler->Branch(assembler->WordIsSmi(rhs), &rhs_is_smi,
+        assembler->Branch(assembler->TaggedIsSmi(rhs), &rhs_is_smi,
                           &rhs_is_not_smi);
 
         assembler->Bind(&rhs_is_smi);
@@ -1198,13 +1305,13 @@ void Builtins::Generate_Divide(CodeStubAssembler* assembler) {
     Node* divisor = var_divisor.value();
 
     Label dividend_is_smi(assembler), dividend_is_not_smi(assembler);
-    assembler->Branch(assembler->WordIsSmi(dividend), &dividend_is_smi,
+    assembler->Branch(assembler->TaggedIsSmi(dividend), &dividend_is_smi,
                       &dividend_is_not_smi);
 
     assembler->Bind(&dividend_is_smi);
     {
       Label divisor_is_smi(assembler), divisor_is_not_smi(assembler);
-      assembler->Branch(assembler->WordIsSmi(divisor), &divisor_is_smi,
+      assembler->Branch(assembler->TaggedIsSmi(divisor), &divisor_is_smi,
                         &divisor_is_not_smi);
 
       assembler->Bind(&divisor_is_smi);
@@ -1321,7 +1428,7 @@ void Builtins::Generate_Divide(CodeStubAssembler* assembler) {
       {
         // Check if {divisor} is a Smi.
         Label divisor_is_smi(assembler), divisor_is_not_smi(assembler);
-        assembler->Branch(assembler->WordIsSmi(divisor), &divisor_is_smi,
+        assembler->Branch(assembler->TaggedIsSmi(divisor), &divisor_is_smi,
                           &divisor_is_not_smi);
 
         assembler->Bind(&divisor_is_smi);
@@ -1418,14 +1525,14 @@ void Builtins::Generate_Modulus(CodeStubAssembler* assembler) {
     Node* divisor = var_divisor.value();
 
     Label dividend_is_smi(assembler), dividend_is_not_smi(assembler);
-    assembler->Branch(assembler->WordIsSmi(dividend), &dividend_is_smi,
+    assembler->Branch(assembler->TaggedIsSmi(dividend), &dividend_is_smi,
                       &dividend_is_not_smi);
 
     assembler->Bind(&dividend_is_smi);
     {
       Label dividend_is_not_zero(assembler);
       Label divisor_is_smi(assembler), divisor_is_not_smi(assembler);
-      assembler->Branch(assembler->WordIsSmi(divisor), &divisor_is_smi,
+      assembler->Branch(assembler->TaggedIsSmi(divisor), &divisor_is_smi,
                         &divisor_is_not_smi);
 
       assembler->Bind(&divisor_is_smi);
@@ -1479,7 +1586,7 @@ void Builtins::Generate_Modulus(CodeStubAssembler* assembler) {
       {
         // Check if {divisor} is a Smi.
         Label divisor_is_smi(assembler), divisor_is_not_smi(assembler);
-        assembler->Branch(assembler->WordIsSmi(divisor), &divisor_is_smi,
+        assembler->Branch(assembler->TaggedIsSmi(divisor), &divisor_is_smi,
                           &divisor_is_not_smi);
 
         assembler->Bind(&divisor_is_smi);

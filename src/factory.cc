@@ -102,6 +102,15 @@ Handle<PrototypeInfo> Factory::NewPrototypeInfo() {
   return result;
 }
 
+Handle<Tuple3> Factory::NewTuple3(Handle<Object> value1, Handle<Object> value2,
+                                  Handle<Object> value3) {
+  Handle<Tuple3> result = Handle<Tuple3>::cast(NewStruct(TUPLE3_TYPE));
+  result->set_value1(*value1);
+  result->set_value2(*value2);
+  result->set_value3(*value3);
+  return result;
+}
+
 Handle<ContextExtension> Factory::NewContextExtension(
     Handle<ScopeInfo> scope_info, Handle<Object> extension) {
   Handle<ContextExtension> result =
@@ -289,6 +298,44 @@ MaybeHandle<String> Factory::NewStringFromUtf8(Vector<const char> string,
   // Copy ASCII portion.
   uint16_t* data = result->GetChars();
   const char* ascii_data = string.start();
+  for (int i = 0; i < non_ascii_start; i++) {
+    *data++ = *ascii_data++;
+  }
+  // Now write the remainder.
+  decoder->WriteUtf16(data, utf16_length);
+  return result;
+}
+
+MaybeHandle<String> Factory::NewStringFromUtf8SubString(
+    Handle<SeqOneByteString> str, int begin, int length,
+    PretenureFlag pretenure) {
+  // Check for ASCII first since this is the common case.
+  const char* start = reinterpret_cast<const char*>(str->GetChars() + begin);
+  int non_ascii_start = String::NonAsciiStart(start, length);
+  if (non_ascii_start >= length) {
+    // If the string is ASCII, we can just make a substring.
+    // TODO(v8): the pretenure flag is ignored in this case.
+    return NewSubString(str, begin, begin + length);
+  }
+
+  // Non-ASCII and we need to decode.
+  Access<UnicodeCache::Utf8Decoder> decoder(
+      isolate()->unicode_cache()->utf8_decoder());
+  decoder->Reset(start + non_ascii_start, length - non_ascii_start);
+  int utf16_length = static_cast<int>(decoder->Utf16Length());
+  DCHECK(utf16_length > 0);
+  // Allocate string.
+  Handle<SeqTwoByteString> result;
+  ASSIGN_RETURN_ON_EXCEPTION(
+      isolate(), result,
+      NewRawTwoByteString(non_ascii_start + utf16_length, pretenure), String);
+
+  // Reset the decoder, because the original {str} may have moved.
+  const char* ascii_data =
+      reinterpret_cast<const char*>(str->GetChars() + begin);
+  decoder->Reset(ascii_data + non_ascii_start, length - non_ascii_start);
+  // Copy ASCII portion.
+  uint16_t* data = result->GetChars();
   for (int i = 0; i < non_ascii_start; i++) {
     *data++ = *ascii_data++;
   }
@@ -780,6 +827,7 @@ Handle<Context> Factory::NewNativeContext() {
   Handle<Context> context = Handle<Context>::cast(array);
   context->set_native_context(*context);
   context->set_errors_thrown(Smi::kZero);
+  context->set_math_random_index(Smi::kZero);
   Handle<WeakCell> weak_cell = NewWeakCell(context);
   context->set_self_weak_cell(*weak_cell);
   DCHECK(context->IsNativeContext());
@@ -922,18 +970,34 @@ Handle<Struct> Factory::NewStruct(InstanceType type) {
       Struct);
 }
 
-Handle<PromiseContainer> Factory::NewPromiseContainer(
+Handle<PromiseResolveThenableJobInfo> Factory::NewPromiseResolveThenableJobInfo(
     Handle<JSReceiver> thenable, Handle<JSReceiver> then,
     Handle<JSFunction> resolve, Handle<JSFunction> reject,
-    Handle<Object> before_debug_event, Handle<Object> after_debug_event) {
-  Handle<PromiseContainer> result =
-      Handle<PromiseContainer>::cast(NewStruct(PROMISE_CONTAINER_TYPE));
+    Handle<Object> debug_id, Handle<Object> debug_name) {
+  Handle<PromiseResolveThenableJobInfo> result =
+      Handle<PromiseResolveThenableJobInfo>::cast(
+          NewStruct(PROMISE_RESOLVE_THENABLE_JOB_INFO_TYPE));
   result->set_thenable(*thenable);
   result->set_then(*then);
   result->set_resolve(*resolve);
   result->set_reject(*reject);
-  result->set_before_debug_event(*before_debug_event);
-  result->set_after_debug_event(*after_debug_event);
+  result->set_debug_id(*debug_id);
+  result->set_debug_name(*debug_name);
+  return result;
+}
+
+Handle<PromiseReactionJobInfo> Factory::NewPromiseReactionJobInfo(
+    Handle<Object> value, Handle<Object> tasks, Handle<Object> deferred,
+    Handle<Object> debug_id, Handle<Object> debug_name,
+    Handle<Context> context) {
+  Handle<PromiseReactionJobInfo> result = Handle<PromiseReactionJobInfo>::cast(
+      NewStruct(PROMISE_REACTION_JOB_INFO_TYPE));
+  result->set_value(*value);
+  result->set_tasks(*tasks);
+  result->set_deferred(*deferred);
+  result->set_debug_id(*debug_id);
+  result->set_debug_name(*debug_name);
+  result->set_context(*context);
   return result;
 }
 
@@ -1272,6 +1336,8 @@ DEFINE_ERROR(RangeError, range_error)
 DEFINE_ERROR(ReferenceError, reference_error)
 DEFINE_ERROR(SyntaxError, syntax_error)
 DEFINE_ERROR(TypeError, type_error)
+DEFINE_ERROR(WasmCompileError, wasm_compile_error)
+DEFINE_ERROR(WasmRuntimeError, wasm_runtime_error)
 #undef DEFINE_ERROR
 
 Handle<JSFunction> Factory::NewFunction(Handle<Map> map,
@@ -1764,13 +1830,12 @@ Handle<Module> Factory::NewModule(Handle<SharedFunctionInfo> code) {
 
   Handle<Module> module = Handle<Module>::cast(NewStruct(MODULE_TYPE));
   module->set_code(*code);
-  module->set_embedder_data(isolate()->heap()->undefined_value());
   module->set_exports(*exports);
-  module->set_flags(0);
+  module->set_hash(isolate()->GenerateIdentityHash(Smi::kMaxValue));
   module->set_module_namespace(isolate()->heap()->undefined_value());
   module->set_requested_modules(*requested_modules);
-  module->set_embedder_data(isolate()->heap()->undefined_value());
-  module->set_hash(isolate()->GenerateIdentityHash(Smi::kMaxValue));
+  DCHECK(!module->instantiated());
+  DCHECK(!module->evaluated());
   return module;
 }
 
@@ -2468,6 +2533,23 @@ void Factory::SetRegExpIrregexpData(Handle<JSRegExp> regexp,
   regexp->set_data(*store);
 }
 
+Handle<RegExpMatchInfo> Factory::NewRegExpMatchInfo() {
+  // Initially, the last match info consists of all fixed fields plus space for
+  // the match itself (i.e., 2 capture indices).
+  static const int kInitialSize = RegExpMatchInfo::kFirstCaptureIndex +
+                                  RegExpMatchInfo::kInitialCaptureIndices;
+
+  Handle<FixedArray> elems = NewFixedArray(kInitialSize);
+  Handle<RegExpMatchInfo> result = Handle<RegExpMatchInfo>::cast(elems);
+
+  result->SetNumberOfCaptureRegisters(RegExpMatchInfo::kInitialCaptureIndices);
+  result->SetLastSubject(*empty_string());
+  result->SetLastInput(*undefined_value());
+  result->SetCapture(0, 0);
+  result->SetCapture(1, 0);
+
+  return result;
+}
 
 Handle<Object> Factory::GlobalConstantFor(Handle<Name> name) {
   if (Name::Equals(name, undefined_string())) return undefined_value();
@@ -2608,6 +2690,27 @@ void Factory::SetStrictFunctionInstanceDescriptor(Handle<Map> map,
                                  prototype, attribs);
     map->AppendDescriptor(&d);
   }
+}
+
+Handle<JSFixedArrayIterator> Factory::NewJSFixedArrayIterator(
+    Handle<FixedArray> array) {
+  // Create the "next" function (must be unique per iterator object).
+  Handle<Code> code(
+      isolate()->builtins()->builtin(Builtins::kFixedArrayIteratorNext));
+  // TODO(neis): Don't create a new SharedFunctionInfo each time.
+  Handle<JSFunction> next = isolate()->factory()->NewFunctionWithoutPrototype(
+      isolate()->factory()->next_string(), code, false);
+  next->shared()->set_native(true);
+
+  // Create the iterator.
+  Handle<Map> map(isolate()->native_context()->fixed_array_iterator_map());
+  Handle<JSFixedArrayIterator> iterator =
+      Handle<JSFixedArrayIterator>::cast(NewJSObjectFromMap(map));
+  iterator->set_initial_next(*next);
+  iterator->set_array(*array);
+  iterator->set_index(0);
+  iterator->InObjectPropertyAtPut(JSFixedArrayIterator::kNextIndex, *next);
+  return iterator;
 }
 
 }  // namespace internal

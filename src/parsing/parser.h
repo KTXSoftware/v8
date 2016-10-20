@@ -7,9 +7,11 @@
 
 #include "src/ast/ast.h"
 #include "src/ast/scopes.h"
+#include "src/base/compiler-specific.h"
+#include "src/globals.h"
 #include "src/parsing/parser-base.h"
-#include "src/parsing/preparse-data.h"
 #include "src/parsing/preparse-data-format.h"
+#include "src/parsing/preparse-data.h"
 #include "src/parsing/preparser.h"
 #include "src/pending-compilation-error-handler.h"
 
@@ -134,7 +136,6 @@ struct ParserFormalParameters : FormalParametersBase {
       : FormalParametersBase(scope), params(4, scope->zone()) {}
   ZoneList<Parameter> params;
 
-  int Arity() const { return params.length(); }
   const Parameter& at(int i) const { return params[i]; }
 };
 
@@ -168,7 +169,7 @@ struct ParserTypes<Parser> {
   typedef ParserTargetScope TargetScope;
 };
 
-class Parser : public ParserBase<Parser> {
+class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
  public:
   explicit Parser(ParseInfo* info);
   ~Parser() {
@@ -205,6 +206,11 @@ class Parser : public ParserBase<Parser> {
   friend class ParserBase<Parser>;
   friend class v8::internal::ExpressionClassifier<ParserTypes<Parser>>;
 
+  bool AllowsLazyParsingWithoutUnresolvedVariables() const {
+    return scope()->AllowsLazyParsingWithoutUnresolvedVariables(
+        original_scope_);
+  }
+
   // Runtime encoding of different completion modes.
   enum CompletionKind {
     kNormalCompletion,
@@ -230,9 +236,10 @@ class Parser : public ParserBase<Parser> {
   // Returns NULL if parsing failed.
   FunctionLiteral* ParseProgram(Isolate* isolate, ParseInfo* info);
 
-  FunctionLiteral* ParseLazy(Isolate* isolate, ParseInfo* info);
-  FunctionLiteral* DoParseLazy(ParseInfo* info, const AstRawString* raw_name,
-                               Utf16CharacterStream* source);
+  FunctionLiteral* ParseFunction(Isolate* isolate, ParseInfo* info);
+  FunctionLiteral* DoParseFunction(ParseInfo* info,
+                                   const AstRawString* raw_name,
+                                   Utf16CharacterStream* source);
 
   // Called by ParseProgram after setting up the scanner.
   FunctionLiteral* DoParseProgram(ParseInfo* info);
@@ -243,11 +250,12 @@ class Parser : public ParserBase<Parser> {
     return compile_options_;
   }
   bool consume_cached_parse_data() const {
-    return compile_options_ == ScriptCompiler::kConsumeParserCache &&
-           cached_parse_data_ != NULL;
+    return allow_lazy() &&
+           compile_options_ == ScriptCompiler::kConsumeParserCache;
   }
   bool produce_cached_parse_data() const {
-    return compile_options_ == ScriptCompiler::kProduceParserCache;
+    return allow_lazy() &&
+           compile_options_ == ScriptCompiler::kProduceParserCache;
   }
 
   void ParseModuleItemList(ZoneList<Statement*>* body, bool* ok);
@@ -487,7 +495,7 @@ class Parser : public ParserBase<Parser> {
                                          bool is_inner_function, bool may_abort,
                                          bool* ok);
 
-  PreParser::PreParseResult ParseLazyFunctionBodyWithPreParser(
+  PreParser::PreParseResult ParseFunctionBodyWithPreParser(
       SingletonLogger* logger, bool is_inner_function, bool may_abort);
 
   Block* BuildParameterInitializationBlock(
@@ -994,6 +1002,7 @@ class Parser : public ParserBase<Parser> {
                                     Expression* initializer,
                                     int initializer_end_position,
                                     bool is_rest) {
+    parameters->UpdateArityAndFunctionLength(initializer != nullptr, is_rest);
     bool is_simple = pattern->IsVariableProxy() && initializer == nullptr;
     const AstRawString* name = is_simple
                                    ? pattern->AsVariableProxy()->raw_name()
@@ -1093,6 +1102,47 @@ class Parser : public ParserBase<Parser> {
   HistogramTimer* pre_parse_timer_;
 
   bool parsing_on_main_thread_;
+};
+
+// ----------------------------------------------------------------------------
+// Target is a support class to facilitate manipulation of the
+// Parser's target_stack_ (the stack of potential 'break' and
+// 'continue' statement targets). Upon construction, a new target is
+// added; it is removed upon destruction.
+
+class ParserTarget BASE_EMBEDDED {
+ public:
+  ParserTarget(ParserBase<Parser>* parser, BreakableStatement* statement)
+      : variable_(&parser->impl()->target_stack_),
+        statement_(statement),
+        previous_(parser->impl()->target_stack_) {
+    parser->impl()->target_stack_ = this;
+  }
+
+  ~ParserTarget() { *variable_ = previous_; }
+
+  ParserTarget* previous() { return previous_; }
+  BreakableStatement* statement() { return statement_; }
+
+ private:
+  ParserTarget** variable_;
+  BreakableStatement* statement_;
+  ParserTarget* previous_;
+};
+
+class ParserTargetScope BASE_EMBEDDED {
+ public:
+  explicit ParserTargetScope(ParserBase<Parser>* parser)
+      : variable_(&parser->impl()->target_stack_),
+        previous_(parser->impl()->target_stack_) {
+    parser->impl()->target_stack_ = nullptr;
+  }
+
+  ~ParserTargetScope() { *variable_ = previous_; }
+
+ private:
+  ParserTarget** variable_;
+  ParserTarget* previous_;
 };
 
 }  // namespace internal

@@ -19,7 +19,7 @@ namespace wasm {
 namespace testing {
 
 // Decodes the given encoded module.
-const WasmModule* DecodeWasmModuleForTesting(Isolate* isolate, Zone* zone,
+const WasmModule* DecodeWasmModuleForTesting(Isolate* isolate,
                                              ErrorThrower* thrower,
                                              const byte* module_start,
                                              const byte* module_end,
@@ -49,7 +49,7 @@ int32_t InterpretWasmModule(Isolate* isolate, ErrorThrower* thrower,
 
 // Compiles WasmModule bytes and return an instance of the compiled module.
 const Handle<JSObject> CompileInstantiateWasmModuleForTesting(
-    Isolate* isolate, Zone* zone, const byte* module_start,
+    Isolate* isolate, ErrorThrower* thrower, const byte* module_start,
     const byte* module_end, ModuleOrigin origin);
 
 // Runs the module instance with arguments.

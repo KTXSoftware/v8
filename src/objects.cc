@@ -3794,7 +3794,7 @@ void Map::UpdateFieldType(int descriptor, Handle<Name> name,
   PropertyDetails details = instance_descriptors()->GetDetails(descriptor);
   if (details.type() != DATA) return;
 
-  Zone zone(GetIsolate()->allocator());
+  Zone zone(GetIsolate()->allocator(), ZONE_NAME);
   ZoneQueue<Map*> backlog(&zone);
   backlog.push(this);
 
@@ -3889,7 +3889,7 @@ void Map::GeneralizeFieldType(Handle<Map> map, int modify_index,
   field_owner->UpdateFieldType(modify_index, name, new_representation,
                                wrapped_type);
   field_owner->dependent_code()->DeoptimizeDependentCodeGroup(
-      isolate, DependentCode::kFieldTypeGroup);
+      isolate, DependentCode::kFieldOwnerGroup);
 
   if (FLAG_trace_generalization) {
     map->PrintGeneralization(
@@ -10310,6 +10310,15 @@ Handle<ArrayList> ArrayList::EnsureSpace(Handle<ArrayList> array, int length) {
   return ret;
 }
 
+Handle<RegExpMatchInfo> RegExpMatchInfo::ReserveCaptures(
+    Handle<RegExpMatchInfo> match_info, int capture_count) {
+  DCHECK_GE(match_info->length(), kLastMatchOverhead);
+  const int required_length = kFirstCaptureIndex + capture_count;
+  Handle<FixedArray> result =
+      EnsureSpaceInFixedArray(match_info, required_length);
+  return Handle<RegExpMatchInfo>::cast(result);
+}
+
 // static
 Handle<FrameArray> FrameArray::AppendJSFrame(Handle<FrameArray> in,
                                              Handle<Object> receiver,
@@ -10330,14 +10339,14 @@ Handle<FrameArray> FrameArray::AppendJSFrame(Handle<FrameArray> in,
 
 // static
 Handle<FrameArray> FrameArray::AppendWasmFrame(Handle<FrameArray> in,
-                                               Handle<Object> wasm_object,
+                                               Handle<Object> wasm_instance,
                                                int wasm_function_index,
                                                Handle<AbstractCode> code,
                                                int offset, int flags) {
   const int frame_count = in->FrameCount();
   const int new_length = LengthFor(frame_count + 1);
   Handle<FrameArray> array = EnsureSpace(in, new_length);
-  array->SetWasmObject(frame_count, *wasm_object);
+  array->SetWasmInstance(frame_count, *wasm_instance);
   array->SetWasmFunctionIndex(frame_count, Smi::FromInt(wasm_function_index));
   array->SetCode(frame_count, *code);
   array->SetOffset(frame_count, Smi::FromInt(offset));
@@ -11652,6 +11661,101 @@ int String::IndexOf(Isolate* isolate, Handle<String> receiver,
                                   start_index);
 }
 
+MaybeHandle<String> String::GetSubstitution(Isolate* isolate, Match* match,
+                                            Handle<String> replacement) {
+  Factory* factory = isolate->factory();
+
+  const int replacement_length = replacement->length();
+  const int captures_length = match->CaptureCount();
+
+  replacement = String::Flatten(replacement);
+
+  Handle<String> dollar_string =
+      factory->LookupSingleCharacterStringFromCode('$');
+  int next = String::IndexOf(isolate, replacement, dollar_string, 0);
+  if (next < 0) {
+    return replacement;
+  }
+
+  IncrementalStringBuilder builder(isolate);
+
+  if (next > 0) {
+    builder.AppendString(factory->NewSubString(replacement, 0, next));
+  }
+
+  while (true) {
+    int pos = next + 1;
+    if (pos < replacement_length) {
+      const uint16_t peek = replacement->Get(pos);
+      if (peek == '$') {  // $$
+        pos++;
+        builder.AppendCharacter('$');
+      } else if (peek == '&') {  // $& - match
+        pos++;
+        builder.AppendString(match->GetMatch());
+      } else if (peek == '`') {  // $` - prefix
+        pos++;
+        builder.AppendString(match->GetPrefix());
+      } else if (peek == '\'') {  // $' - suffix
+        pos++;
+        builder.AppendString(match->GetSuffix());
+      } else if (peek >= '0' && peek <= '9') {
+        // Valid indices are $1 .. $9, $01 .. $09 and $10 .. $99
+        int scaled_index = (peek - '0');
+        int advance = 1;
+
+        if (pos + 1 < replacement_length) {
+          const uint16_t next_peek = replacement->Get(pos + 1);
+          if (next_peek >= '0' && next_peek <= '9') {
+            const int new_scaled_index = scaled_index * 10 + (next_peek - '0');
+            if (new_scaled_index < captures_length) {
+              scaled_index = new_scaled_index;
+              advance = 2;
+            }
+          }
+        }
+
+        if (scaled_index != 0 && scaled_index < captures_length) {
+          bool capture_exists;
+          Handle<String> capture;
+          ASSIGN_RETURN_ON_EXCEPTION(
+              isolate, capture,
+              match->GetCapture(scaled_index, &capture_exists), String);
+          if (capture_exists) builder.AppendString(capture);
+          pos += advance;
+        } else {
+          builder.AppendCharacter('$');
+        }
+      } else {
+        builder.AppendCharacter('$');
+      }
+    } else {
+      builder.AppendCharacter('$');
+    }
+
+    // Go the the next $ in the replacement.
+    next = String::IndexOf(isolate, replacement, dollar_string, pos);
+
+    // Return if there are no more $ characters in the replacement. If we
+    // haven't reached the end, we need to append the suffix.
+    if (next < 0) {
+      if (pos < replacement_length) {
+        builder.AppendString(
+            factory->NewSubString(replacement, pos, replacement_length));
+      }
+      return builder.Finish();
+    }
+
+    // Append substring between the previous and the next $ character.
+    if (next > pos) {
+      builder.AppendString(factory->NewSubString(replacement, pos, next));
+    }
+  }
+
+  UNREACHABLE();
+  return MaybeHandle<String>();
+}
+
 namespace {  // for String.Prototype.lastIndexOf
 
 template <typename schar, typename pchar>
@@ -12628,6 +12732,24 @@ Handle<Cell> Map::GetOrCreatePrototypeChainValidityCell(Handle<Map> map,
   return cell;
 }
 
+// static
+Handle<WeakCell> Map::GetOrCreatePrototypeWeakCell(Handle<JSObject> prototype,
+                                                   Isolate* isolate) {
+  DCHECK(!prototype.is_null());
+  Handle<PrototypeInfo> proto_info =
+      GetOrCreatePrototypeInfo(prototype, isolate);
+  Object* maybe_cell = proto_info->weak_cell();
+  // Return existing cell if it's already created.
+  if (maybe_cell->IsWeakCell()) {
+    Handle<WeakCell> cell(WeakCell::cast(maybe_cell), isolate);
+    DCHECK(!cell->cleared());
+    return cell;
+  }
+  // Otherwise create a new cell.
+  Handle<WeakCell> cell = isolate->factory()->NewWeakCell(prototype);
+  proto_info->set_weak_cell(*cell);
+  return cell;
+}
 
 // static
 void Map::SetPrototype(Handle<Map> map, Handle<Object> prototype,
@@ -13728,7 +13850,7 @@ void SharedFunctionInfo::InitFromFunctionLiteral(
     Handle<SharedFunctionInfo> shared_info, FunctionLiteral* lit) {
   // When adding fields here, make sure DeclarationScope::AnalyzePartially is
   // updated accordingly.
-  shared_info->set_length(lit->scope()->arity());
+  shared_info->set_length(lit->function_length());
   shared_info->set_internal_formal_parameter_count(lit->parameter_count());
   shared_info->set_function_token_position(lit->function_token_position());
   shared_info->set_start_position(lit->start_position());
@@ -14411,6 +14533,42 @@ WeakCell* Code::CachedWeakCell() {
   return NULL;
 }
 
+#if defined(OBJECT_PRINT) || defined(ENABLE_DISASSEMBLER)
+
+const char* Code::ICState2String(InlineCacheState state) {
+  switch (state) {
+    case UNINITIALIZED:
+      return "UNINITIALIZED";
+    case PREMONOMORPHIC:
+      return "PREMONOMORPHIC";
+    case MONOMORPHIC:
+      return "MONOMORPHIC";
+    case RECOMPUTE_HANDLER:
+      return "RECOMPUTE_HANDLER";
+    case POLYMORPHIC:
+      return "POLYMORPHIC";
+    case MEGAMORPHIC:
+      return "MEGAMORPHIC";
+    case GENERIC:
+      return "GENERIC";
+  }
+  UNREACHABLE();
+  return NULL;
+}
+
+void Code::PrintExtraICState(std::ostream& os,  // NOLINT
+                             Kind kind, ExtraICState extra) {
+  os << "extra_ic_state = ";
+  if ((kind == STORE_IC || kind == KEYED_STORE_IC) &&
+      is_strict(static_cast<LanguageMode>(extra))) {
+    os << "STRICT\n";
+  } else {
+    os << extra << "\n";
+  }
+}
+
+#endif  // defined(OBJECT_PRINT) || defined(ENABLE_DISASSEMBLER)
+
 #ifdef ENABLE_DISASSEMBLER
 
 void DeoptimizationInputData::DeoptimizationInputDataPrint(
@@ -14663,34 +14821,6 @@ void HandlerTable::HandlerTableReturnPrint(std::ostream& os) {
     CatchPrediction prediction = HandlerPredictionField::decode(handler_field);
     os << "  " << std::setw(4) << pc_offset << "  ->  " << std::setw(4)
        << handler_offset << " (prediction=" << prediction << ")\n";
-  }
-}
-
-
-const char* Code::ICState2String(InlineCacheState state) {
-  switch (state) {
-    case UNINITIALIZED: return "UNINITIALIZED";
-    case PREMONOMORPHIC: return "PREMONOMORPHIC";
-    case MONOMORPHIC: return "MONOMORPHIC";
-    case RECOMPUTE_HANDLER:
-      return "RECOMPUTE_HANDLER";
-    case POLYMORPHIC: return "POLYMORPHIC";
-    case MEGAMORPHIC: return "MEGAMORPHIC";
-    case GENERIC: return "GENERIC";
-  }
-  UNREACHABLE();
-  return NULL;
-}
-
-
-void Code::PrintExtraICState(std::ostream& os,  // NOLINT
-                             Kind kind, ExtraICState extra) {
-  os << "extra_ic_state = ";
-  if ((kind == STORE_IC || kind == KEYED_STORE_IC) &&
-      is_strict(static_cast<LanguageMode>(extra))) {
-    os << "STRICT\n";
-  } else {
-    os << extra << "\n";
   }
 }
 
@@ -15227,8 +15357,8 @@ const char* DependentCode::DependencyGroupName(DependencyGroup group) {
       return "prototype-check";
     case kPropertyCellChangedGroup:
       return "property-cell-changed";
-    case kFieldTypeGroup:
-      return "field-type";
+    case kFieldOwnerGroup:
+      return "field-owner";
     case kInitialMapChangedGroup:
       return "initial-map-changed";
     case kAllocationSiteTenuringChangedGroup:
@@ -16506,7 +16636,7 @@ MaybeHandle<JSRegExp> JSRegExp::Initialize(Handle<JSRegExp> regexp,
   } else {
     // Map has changed, so use generic, but slower, method.
     RETURN_ON_EXCEPTION(isolate, JSReceiver::SetProperty(
-                                     regexp, factory->last_index_string(),
+                                     regexp, factory->lastIndex_string(),
                                      Handle<Smi>(Smi::kZero, isolate), STRICT),
                         JSRegExp);
   }
@@ -19831,10 +19961,8 @@ MaybeHandle<Cell> Module::ResolveExportUsingStarExports(
 }
 
 bool Module::Instantiate(Handle<Module> module, v8::Local<v8::Context> context,
-                         v8::Module::ResolveCallback callback,
-                         v8::Local<v8::Value> callback_data) {
-  // Already instantiated.
-  if (module->code()->IsJSFunction()) return true;
+                         v8::Module::ResolveCallback callback) {
+  if (module->instantiated()) return true;
 
   Isolate* isolate = module->GetIsolate();
   Handle<SharedFunctionInfo> shared(SharedFunctionInfo::cast(module->code()),
@@ -19844,6 +19972,7 @@ bool Module::Instantiate(Handle<Module> module, v8::Local<v8::Context> context,
           shared,
           handle(Utils::OpenHandle(*context)->native_context(), isolate));
   module->set_code(*function);
+  DCHECK(module->instantiated());
 
   Handle<ModuleInfo> module_info(shared->scope_info()->ModuleDescriptorInfo(),
                                  isolate);
@@ -19878,7 +20007,7 @@ bool Module::Instantiate(Handle<Module> module, v8::Local<v8::Context> context,
     // persist a module_map across multiple top-level module loads, as
     // the current module is left in a "half-instantiated" state.
     if (!callback(context, v8::Utils::ToLocal(specifier),
-                  v8::Utils::ToLocal(module), callback_data)
+                  v8::Utils::ToLocal(module))
              .ToLocal(&api_requested_module)) {
       // TODO(adamk): Give this a better error message. But this is a
       // misuse of the API anyway.
@@ -19887,12 +20016,12 @@ bool Module::Instantiate(Handle<Module> module, v8::Local<v8::Context> context,
     }
     Handle<Module> requested_module = Utils::OpenHandle(*api_requested_module);
     module->requested_modules()->set(i, *requested_module);
-    if (!Instantiate(requested_module, context, callback, callback_data)) {
+    if (!Instantiate(requested_module, context, callback)) {
       return false;
     }
   }
 
-  Zone zone(isolate->allocator());
+  Zone zone(isolate->allocator(), ZONE_NAME);
 
   // Resolve imports.
   Handle<FixedArray> regular_imports(module_info->regular_imports(), isolate);
@@ -19925,16 +20054,15 @@ bool Module::Instantiate(Handle<Module> module, v8::Local<v8::Context> context,
 }
 
 MaybeHandle<Object> Module::Evaluate(Handle<Module> module) {
-  DCHECK(module->code()->IsJSFunction());  // Instantiated.
-
-  Isolate* isolate = module->GetIsolate();
+  DCHECK(module->instantiated());
 
   // Each module can only be evaluated once.
+  Isolate* isolate = module->GetIsolate();
   if (module->evaluated()) return isolate->factory()->undefined_value();
-  module->set_evaluated(true);
+  Handle<JSFunction> function(JSFunction::cast(module->code()), isolate);
+  module->set_evaluated();
 
   // Initialization.
-  Handle<JSFunction> function(JSFunction::cast(module->code()), isolate);
   DCHECK_EQ(MODULE_SCOPE, function->shared()->scope_info()->scope_type());
   Handle<Object> receiver = isolate->factory()->undefined_value();
   Handle<Object> argv[] = {module};
@@ -19961,7 +20089,7 @@ namespace {
 
 void FetchStarExports(Handle<Module> module, Zone* zone,
                       UnorderedModuleSet* visited) {
-  DCHECK(module->code()->IsJSFunction());  // Instantiated.
+  DCHECK(module->instantiated());
 
   bool cycle = !visited->insert(module).second;
   if (cycle) return;
@@ -20056,7 +20184,7 @@ Handle<JSModuleNamespace> Module::GetModuleNamespace(Handle<Module> module) {
   module->set_module_namespace(*ns);
 
   // Collect the export names.
-  Zone zone(isolate->allocator());
+  Zone zone(isolate->allocator(), ZONE_NAME);
   UnorderedModuleSet visited(&zone);
   FetchStarExports(module, &zone, &visited);
   Handle<ObjectHashTable> exports(module->exports(), isolate);

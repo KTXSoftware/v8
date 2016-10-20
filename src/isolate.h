@@ -45,6 +45,7 @@ class CodeRange;
 class CodeStubDescriptor;
 class CodeTracer;
 class CompilationCache;
+class CompilerDispatcherTracer;
 class CompilationStatistics;
 class ContextSlotCache;
 class Counters;
@@ -63,7 +64,6 @@ class HStatistics;
 class HTracer;
 class InlineRuntimeFunctionsTable;
 class InnerPointerToCodeCache;
-class KeyedLookupCache;
 class Logger;
 class MaterializedObjectStore;
 class OptimizingCompileDispatcher;
@@ -116,16 +116,6 @@ class Interpreter;
 
 #define RETURN_EXCEPTION_IF_SCHEDULED_EXCEPTION(isolate, T) \
   RETURN_VALUE_IF_SCHEDULED_EXCEPTION(isolate, MaybeHandle<T>())
-
-#define RETURN_RESULT(isolate, call, T)           \
-  do {                                            \
-    Handle<T> __result__;                         \
-    if (!(call).ToHandle(&__result__)) {          \
-      DCHECK((isolate)->has_pending_exception()); \
-      return MaybeHandle<T>();                    \
-    }                                             \
-    return __result__;                            \
-  } while (false)
 
 #define RETURN_RESULT_OR_FAILURE(isolate, call)     \
   do {                                              \
@@ -413,6 +403,7 @@ typedef List<HeapObject*> DebugObjectCache;
   V(base::HashMap*, external_reference_map, nullptr)                          \
   V(base::HashMap*, root_index_map, nullptr)                                  \
   V(int, pending_microtask_count, 0)                                          \
+  V(int, debug_microtask_count, 0)                                            \
   V(HStatistics*, hstatistics, nullptr)                                       \
   V(CompilationStatistics*, turbo_statistics, nullptr)                        \
   V(HTracer*, htracer, nullptr)                                               \
@@ -869,10 +860,6 @@ class Isolate {
     return materialized_object_store_;
   }
 
-  KeyedLookupCache* keyed_lookup_cache() {
-    return keyed_lookup_cache_;
-  }
-
   ContextSlotCache* context_slot_cache() {
     return context_slot_cache_;
   }
@@ -1067,7 +1054,7 @@ class Isolate {
 
   void* stress_deopt_count_address() { return &stress_deopt_count_; }
 
-  base::RandomNumberGenerator* random_number_generator();
+  V8_EXPORT_PRIVATE base::RandomNumberGenerator* random_number_generator();
 
   // Generates a random number that is non-zero when masked
   // with the provided mask.
@@ -1109,12 +1096,16 @@ class Isolate {
   void ReportPromiseReject(Handle<JSObject> promise, Handle<Object> value,
                            v8::PromiseRejectEvent event);
 
-  void PromiseResolveThenableJob(Handle<PromiseContainer> container,
+  void PromiseReactionJob(Handle<PromiseReactionJobInfo> info,
+                          MaybeHandle<Object>* result,
+                          MaybeHandle<Object>* maybe_exception);
+  void PromiseResolveThenableJob(Handle<PromiseResolveThenableJobInfo> info,
                                  MaybeHandle<Object>* result,
                                  MaybeHandle<Object>* maybe_exception);
   void EnqueueMicrotask(Handle<Object> microtask);
   void RunMicrotasks();
   bool IsRunningMicrotasks() const { return is_running_microtasks_; }
+  int GetNextDebugMicrotaskId() { return debug_microtask_count_++; }
 
   void SetUseCounterCallback(v8::Isolate::UseCounterCallback callback);
   void CountUsage(v8::Isolate::UseCounterFeature feature);
@@ -1158,6 +1149,10 @@ class Isolate {
   interpreter::Interpreter* interpreter() const { return interpreter_; }
 
   AccountingAllocator* allocator() { return allocator_; }
+
+  CompilerDispatcherTracer* compiler_dispatcher_tracer() const {
+    return compiler_dispatcher_tracer_;
+  }
 
   bool IsInAnyContext(Object* object, uint32_t index);
 
@@ -1327,7 +1322,6 @@ class Isolate {
   bool capture_stack_trace_for_uncaught_exceptions_;
   int stack_trace_for_uncaught_exceptions_frame_limit_;
   StackTrace::StackTraceOptions stack_trace_for_uncaught_exceptions_options_;
-  KeyedLookupCache* keyed_lookup_cache_;
   ContextSlotCache* context_slot_cache_;
   DescriptorLookupCache* descriptor_lookup_cache_;
   HandleScopeData handle_scope_data_;
@@ -1385,6 +1379,8 @@ class Isolate {
   FunctionEntryHook function_entry_hook_;
 
   interpreter::Interpreter* interpreter_;
+
+  CompilerDispatcherTracer* compiler_dispatcher_tracer_;
 
   typedef std::pair<InterruptCallback, void*> InterruptEntry;
   std::queue<InterruptEntry> api_interrupts_queue_;

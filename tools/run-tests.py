@@ -68,6 +68,7 @@ TEST_MAP = {
     "mjsunit",
     "cctest",
     "webkit",
+    "inspector",
     "fuzzer",
     "message",
     "preparser",
@@ -89,6 +90,7 @@ TEST_MAP = {
     "mjsunit",
     "cctest",
     "webkit",
+    "inspector",
     "intl",
   ],
   "unittests": [
@@ -254,6 +256,9 @@ def BuildOptions():
                     default=False, action="store_true")
   result.add_option("--download-data-only",
                     help="Deprecated",
+                    default=False, action="store_true")
+  result.add_option("--enable-inspector",
+                    help="Indicates a build with inspector support",
                     default=False, action="store_true")
   result.add_option("--extra-flags",
                     help="Additional flags to pass to each test command",
@@ -447,8 +452,13 @@ def ProcessOptions(options):
       print(">>> Latest GN build found is %s" % latest_config)
       options.outdir = os.path.join(DEFAULT_OUT_GN, latest_config)
 
-  build_config_path = os.path.join(
-      BASE_DIR, options.outdir, "v8_build_config.json")
+  if options.buildbot:
+    build_config_path = os.path.join(
+        BASE_DIR, options.outdir, options.mode, "v8_build_config.json")
+  else:
+    build_config_path = os.path.join(
+        BASE_DIR, options.outdir, "v8_build_config.json")
+
   if os.path.exists(build_config_path):
     try:
       with open(build_config_path) as f:
@@ -459,6 +469,10 @@ def ProcessOptions(options):
       return False
     options.auto_detect = True
 
+    # In auto-detect mode the outdir is always where we found the build config.
+    # This ensures that we'll also take the build products from there.
+    options.outdir = os.path.dirname(build_config_path)
+
     options.arch_and_mode = None
     options.arch = build_config["v8_target_cpu"]
     if options.arch == 'x86':
@@ -466,6 +480,7 @@ def ProcessOptions(options):
       options.arch = 'ia32'
     options.asan = build_config["is_asan"]
     options.dcheck_always_on = build_config["dcheck_always_on"]
+    options.enable_inspector = build_config["v8_enable_inspector"]
     options.mode = 'debug' if build_config["is_debug"] else 'release'
     options.msan = build_config["is_msan"]
     options.no_i18n = not build_config["v8_enable_i18n_support"]
@@ -592,6 +607,9 @@ def ProcessOptions(options):
   if options.no_i18n:
     TEST_MAP["bot_default"].remove("intl")
     TEST_MAP["default"].remove("intl")
+  if not options.enable_inspector:
+    TEST_MAP["bot_default"].remove("inspector")
+    TEST_MAP["optimize_for_size"].remove("inspector")
   return True
 
 
@@ -702,15 +720,15 @@ def Execute(arch, mode, args, options, suites):
 
   shell_dir = options.shell_dir
   if not shell_dir:
-    if options.buildbot:
+    if options.auto_detect:
+      # If an output dir with a build was passed, test directly in that
+      # directory.
+      shell_dir = os.path.join(BASE_DIR, options.outdir)
+    elif options.buildbot:
       # TODO(machenbach): Get rid of different output folder location on
       # buildbot. Currently this is capitalized Release and Debug.
       shell_dir = os.path.join(BASE_DIR, options.outdir, mode)
       mode = BuildbotToV8Mode(mode)
-    elif options.auto_detect:
-      # If an output dir with a build was passed, test directly in that
-      # directory.
-      shell_dir = os.path.join(BASE_DIR, options.outdir)
     else:
       shell_dir = os.path.join(
           BASE_DIR,

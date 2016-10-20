@@ -6,6 +6,7 @@
 #include "src/builtins/builtins-utils.h"
 
 #include "src/code-factory.h"
+#include "src/regexp/regexp-utils.h"
 
 namespace v8 {
 namespace internal {
@@ -291,8 +292,8 @@ void GenerateStringRelationalComparison(CodeStubAssembler* assembler,
           assembler->Goto(&loop);
 
           assembler->Bind(&if_valueisnotsame);
-          assembler->BranchIf(assembler->Uint32LessThan(lhs_value, rhs_value),
-                              &if_less, &if_greater);
+          assembler->Branch(assembler->Uint32LessThan(lhs_value, rhs_value),
+                            &if_less, &if_greater);
         }
 
         assembler->Bind(&if_done);
@@ -713,7 +714,8 @@ void Builtins::Generate_StringPrototypeCharAt(CodeStubAssembler* assembler) {
     Label return_emptystring(assembler, Label::kDeferred);
     position = assembler->ToInteger(context, position,
                                     CodeStubAssembler::kTruncateMinusZero);
-    assembler->GotoUnless(assembler->WordIsSmi(position), &return_emptystring);
+    assembler->GotoUnless(assembler->TaggedIsSmi(position),
+                          &return_emptystring);
 
     // Determine the actual length of the {receiver} String.
     Node* receiver_length =
@@ -758,7 +760,7 @@ void Builtins::Generate_StringPrototypeCharCodeAt(
     Label return_nan(assembler, Label::kDeferred);
     position = assembler->ToInteger(context, position,
                                     CodeStubAssembler::kTruncateMinusZero);
-    assembler->GotoUnless(assembler->WordIsSmi(position), &return_nan);
+    assembler->GotoUnless(assembler->TaggedIsSmi(position), &return_nan);
 
     // Determine the actual length of the {receiver} String.
     Node* receiver_length =
@@ -779,6 +781,91 @@ void Builtins::Generate_StringPrototypeCharCodeAt(
   Node* value = assembler->StringCharCodeAt(receiver, position);
   Node* result = assembler->SmiFromWord32(value);
   assembler->Return(result);
+}
+
+// ES6 section 21.1.3.6
+// String.prototype.endsWith ( searchString [ , endPosition ] )
+BUILTIN(StringPrototypeEndsWith) {
+  HandleScope handle_scope(isolate);
+  TO_THIS_STRING(str, "String.prototype.endsWith");
+
+  // Check if the search string is a regExp and fail if it is.
+  Handle<Object> search = args.atOrUndefined(isolate, 1);
+  Maybe<bool> is_reg_exp = RegExpUtils::IsRegExp(isolate, search);
+  if (is_reg_exp.IsNothing()) {
+    DCHECK(isolate->has_pending_exception());
+    return isolate->heap()->exception();
+  }
+  if (is_reg_exp.FromJust()) {
+    THROW_NEW_ERROR_RETURN_FAILURE(
+        isolate, NewTypeError(MessageTemplate::kFirstArgumentNotRegExp,
+                              isolate->factory()->NewStringFromStaticChars(
+                                  "String.prototype.endsWith")));
+  }
+  Handle<String> search_string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, search_string,
+                                     Object::ToString(isolate, search));
+
+  Handle<Object> position = args.atOrUndefined(isolate, 2);
+  int end;
+
+  if (position->IsUndefined(isolate)) {
+    end = str->length();
+  } else {
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, position,
+                                       Object::ToInteger(isolate, position));
+    double index = std::max(position->Number(), 0.0);
+    index = std::min(index, static_cast<double>(str->length()));
+    end = static_cast<uint32_t>(index);
+  }
+
+  int start = end - search_string->length();
+  if (start < 0) return *isolate->factory()->false_value();
+
+  FlatStringReader str_reader(isolate, String::Flatten(str));
+  FlatStringReader search_reader(isolate, String::Flatten(search_string));
+
+  for (int i = 0; i < search_string->length(); i++) {
+    if (str_reader.Get(start + i) != search_reader.Get(i)) {
+      return *isolate->factory()->false_value();
+    }
+  }
+  return *isolate->factory()->true_value();
+}
+
+// ES6 section 21.1.3.7
+// String.prototype.includes ( searchString [ , position ] )
+BUILTIN(StringPrototypeIncludes) {
+  HandleScope handle_scope(isolate);
+  TO_THIS_STRING(str, "String.prototype.includes");
+
+  // Check if the search string is a regExp and fail if it is.
+  Handle<Object> search = args.atOrUndefined(isolate, 1);
+  Maybe<bool> is_reg_exp = RegExpUtils::IsRegExp(isolate, search);
+  if (is_reg_exp.IsNothing()) {
+    DCHECK(isolate->has_pending_exception());
+    return isolate->heap()->exception();
+  }
+  if (is_reg_exp.FromJust()) {
+    THROW_NEW_ERROR_RETURN_FAILURE(
+        isolate, NewTypeError(MessageTemplate::kFirstArgumentNotRegExp,
+                              isolate->factory()->NewStringFromStaticChars(
+                                  "String.prototype.includes")));
+  }
+  Handle<String> search_string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, search_string,
+                                     Object::ToString(isolate, search));
+  Handle<Object> position;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, position,
+      Object::ToInteger(isolate, args.atOrUndefined(isolate, 2)));
+
+  double index = std::max(position->Number(), 0.0);
+  index = std::min(index, static_cast<double>(str->length()));
+
+  int index_in_str = String::IndexOf(isolate, str, search_string,
+                                     static_cast<uint32_t>(index));
+  return *isolate->factory()->ToBoolean(index_in_str != -1);
 }
 
 // ES6 section 21.1.3.8 String.prototype.indexOf ( searchString [ , position ] )
@@ -914,7 +1001,7 @@ void Builtins::Generate_StringPrototypeSubstr(CodeStubAssembler* a) {
         a->ToInteger(context, start, CodeStubAssembler::kTruncateMinusZero);
 
     Label if_issmi(a), if_isheapnumber(a, Label::kDeferred);
-    a->Branch(a->WordIsSmi(start_int), &if_issmi, &if_isheapnumber);
+    a->Branch(a->TaggedIsSmi(start_int), &if_issmi, &if_isheapnumber);
 
     a->Bind(&if_issmi);
     {
@@ -958,7 +1045,7 @@ void Builtins::Generate_StringPrototypeSubstr(CodeStubAssembler* a) {
           a->ToInteger(context, length, CodeStubAssembler::kTruncateMinusZero));
     }
 
-    a->Branch(a->WordIsSmi(var_length.value()), &if_issmi, &if_isheapnumber);
+    a->Branch(a->TaggedIsSmi(var_length.value()), &if_issmi, &if_isheapnumber);
 
     // Set {length} to min(max({length}, 0), {string_length} - {start}
     a->Bind(&if_issmi);
@@ -1024,7 +1111,7 @@ compiler::Node* ToSmiBetweenZeroAnd(CodeStubAssembler* a,
       a->ToInteger(context, value, CodeStubAssembler::kTruncateMinusZero);
 
   Label if_issmi(a), if_isnotsmi(a, Label::kDeferred);
-  a->Branch(a->WordIsSmi(value_int), &if_issmi, &if_isnotsmi);
+  a->Branch(a->TaggedIsSmi(value_int), &if_issmi, &if_isnotsmi);
 
   a->Bind(&if_issmi);
   {
@@ -1115,6 +1202,55 @@ void Builtins::Generate_StringPrototypeSubstring(CodeStubAssembler* a) {
         a->SubString(context, string, var_start.value(), var_end.value());
     a->Return(result);
   }
+}
+
+BUILTIN(StringPrototypeStartsWith) {
+  HandleScope handle_scope(isolate);
+  TO_THIS_STRING(str, "String.prototype.startsWith");
+
+  // Check if the search string is a regExp and fail if it is.
+  Handle<Object> search = args.atOrUndefined(isolate, 1);
+  Maybe<bool> is_reg_exp = RegExpUtils::IsRegExp(isolate, search);
+  if (is_reg_exp.IsNothing()) {
+    DCHECK(isolate->has_pending_exception());
+    return isolate->heap()->exception();
+  }
+  if (is_reg_exp.FromJust()) {
+    THROW_NEW_ERROR_RETURN_FAILURE(
+        isolate, NewTypeError(MessageTemplate::kFirstArgumentNotRegExp,
+                              isolate->factory()->NewStringFromStaticChars(
+                                  "String.prototype.startsWith")));
+  }
+  Handle<String> search_string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, search_string,
+                                     Object::ToString(isolate, search));
+
+  Handle<Object> position = args.atOrUndefined(isolate, 2);
+  int start;
+
+  if (position->IsUndefined(isolate)) {
+    start = 0;
+  } else {
+    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, position,
+                                       Object::ToInteger(isolate, position));
+    double index = std::max(position->Number(), 0.0);
+    index = std::min(index, static_cast<double>(str->length()));
+    start = static_cast<uint32_t>(index);
+  }
+
+  if (start + search_string->length() > str->length()) {
+    return *isolate->factory()->false_value();
+  }
+
+  FlatStringReader str_reader(isolate, String::Flatten(str));
+  FlatStringReader search_reader(isolate, String::Flatten(search_string));
+
+  for (int i = 0; i < search_string->length(); i++) {
+    if (str_reader.Get(start + i) != search_reader.Get(i)) {
+      return *isolate->factory()->false_value();
+    }
+  }
+  return *isolate->factory()->true_value();
 }
 
 // ES6 section 21.1.3.25 String.prototype.toString ()
@@ -1295,7 +1431,7 @@ void Builtins::Generate_StringIteratorPrototypeNext(
   Node* iterator = assembler->Parameter(0);
   Node* context = assembler->Parameter(3);
 
-  assembler->GotoIf(assembler->WordIsSmi(iterator), &throw_bad_receiver);
+  assembler->GotoIf(assembler->TaggedIsSmi(iterator), &throw_bad_receiver);
   assembler->GotoUnless(
       assembler->WordEqual(assembler->LoadInstanceType(iterator),
                            assembler->Int32Constant(JS_STRING_ITERATOR_TYPE)),

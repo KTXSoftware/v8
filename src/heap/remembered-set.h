@@ -202,9 +202,7 @@ class RememberedSet {
   // slots that are not part of live objects anymore. This method must be
   // called after marking, when the whole transitive closure is known and
   // must be called before sweeping when mark bits are still intact.
-  static void ClearInvalidSlots(Heap* heap);
-
-  static void VerifyValidSlots(Heap* heap);
+  static void ClearInvalidTypedSlots(Heap* heap, MemoryChunk* chunk);
 
  private:
   static SlotSet* GetSlotSet(MemoryChunk* chunk) {
