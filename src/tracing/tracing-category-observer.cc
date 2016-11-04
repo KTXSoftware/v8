@@ -1,0 +1,43 @@
+// Copyright 2016 the V8 project authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "src/tracing/tracing-category-observer.h"
+
+#include "src/flags.h"
+#include "src/tracing/trace-event.h"
+#include "src/v8.h"
+
+namespace v8 {
+namespace tracing {
+
+TracingCategoryObserver* TracingCategoryObserver::instance_ = nullptr;
+
+void TracingCategoryObserver::SetUp() {
+  TracingCategoryObserver::instance_ = new TracingCategoryObserver();
+  v8::internal::V8::GetCurrentPlatform()->AddTraceStateObserver(
+      TracingCategoryObserver::instance_);
+  TRACE_EVENT_WARMUP_CATEGORY(TRACE_DISABLED_BY_DEFAULT("v8.runtime_stats"));
+}
+
+void TracingCategoryObserver::TearDown() {
+  v8::internal::V8::GetCurrentPlatform()->RemoveTraceStateObserver(
+      TracingCategoryObserver::instance_);
+  delete TracingCategoryObserver::instance_;
+}
+
+void TracingCategoryObserver::OnTraceEnabled() {
+  bool enabled = false;
+  TRACE_EVENT_CATEGORY_GROUP_ENABLED(
+      TRACE_DISABLED_BY_DEFAULT("v8.runtime_stats"), &enabled);
+  if (enabled) {
+    v8::internal::FLAG_runtime_stats |= ENABLED_BY_TRACING;
+  }
+}
+
+void TracingCategoryObserver::OnTraceDisabled() {
+  v8::internal::FLAG_runtime_stats &= ~ENABLED_BY_TRACING;
+}
+
+}  // namespace tracing
+}  // namespace v8

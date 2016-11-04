@@ -1282,79 +1282,6 @@ void MacroAssembler::PopStackHandler() {
 }
 
 
-void MacroAssembler::CheckAccessGlobalProxy(Register holder_reg,
-                                            Register scratch1,
-                                            Register scratch2,
-                                            Label* miss) {
-  Label same_contexts;
-
-  DCHECK(!holder_reg.is(scratch1));
-  DCHECK(!holder_reg.is(scratch2));
-  DCHECK(!scratch1.is(scratch2));
-
-  // Load current lexical context from the active StandardFrame, which
-  // may require crawling past STUB frames.
-  Label load_context;
-  Label has_context;
-  mov(scratch2, ebp);
-  bind(&load_context);
-  mov(scratch1,
-      MemOperand(scratch2, CommonFrameConstants::kContextOrFrameTypeOffset));
-  JumpIfNotSmi(scratch1, &has_context);
-  mov(scratch2, MemOperand(scratch2, CommonFrameConstants::kCallerFPOffset));
-  jmp(&load_context);
-  bind(&has_context);
-
-  // When generating debug code, make sure the lexical context is set.
-  if (emit_debug_code()) {
-    cmp(scratch1, Immediate(0));
-    Check(not_equal, kWeShouldNotHaveAnEmptyLexicalContext);
-  }
-  // Load the native context of the current context.
-  mov(scratch1, ContextOperand(scratch1, Context::NATIVE_CONTEXT_INDEX));
-
-  // Check the context is a native context.
-  if (emit_debug_code()) {
-    // Read the first word and compare to native_context_map.
-    cmp(FieldOperand(scratch1, HeapObject::kMapOffset),
-        isolate()->factory()->native_context_map());
-    Check(equal, kJSGlobalObjectNativeContextShouldBeANativeContext);
-  }
-
-  // Check if both contexts are the same.
-  cmp(scratch1, FieldOperand(holder_reg, JSGlobalProxy::kNativeContextOffset));
-  j(equal, &same_contexts);
-
-  // Compare security tokens, save holder_reg on the stack so we can use it
-  // as a temporary register.
-  //
-  // Check that the security token in the calling global object is
-  // compatible with the security token in the receiving global
-  // object.
-  mov(scratch2,
-      FieldOperand(holder_reg, JSGlobalProxy::kNativeContextOffset));
-
-  // Check the context is a native context.
-  if (emit_debug_code()) {
-    cmp(scratch2, isolate()->factory()->null_value());
-    Check(not_equal, kJSGlobalProxyContextShouldNotBeNull);
-
-    // Read the first word and compare to native_context_map(),
-    cmp(FieldOperand(scratch2, HeapObject::kMapOffset),
-        isolate()->factory()->native_context_map());
-    Check(equal, kJSGlobalObjectNativeContextShouldBeANativeContext);
-  }
-
-  int token_offset = Context::kHeaderSize +
-                     Context::SECURITY_TOKEN_INDEX * kPointerSize;
-  mov(scratch1, FieldOperand(scratch1, token_offset));
-  cmp(scratch1, FieldOperand(scratch2, token_offset));
-  j(not_equal, miss);
-
-  bind(&same_contexts);
-}
-
-
 // Compute the hash code from the untagged key.  This must be kept in sync with
 // ComputeIntegerHash in utils.h and KeyedLoadGenericStub in
 // code-stub-hydrogen.cc
@@ -1880,74 +1807,6 @@ void MacroAssembler::AllocateJSValue(Register result, Register constructor,
   mov(FieldOperand(result, JSValue::kValueOffset), value);
   STATIC_ASSERT(JSValue::kSize == 4 * kPointerSize);
 }
-
-
-// Copy memory, byte-by-byte, from source to destination.  Not optimized for
-// long or aligned copies.  The contents of scratch and length are destroyed.
-// Source and destination are incremented by length.
-// Many variants of movsb, loop unrolling, word moves, and indexed operands
-// have been tried here already, and this is fastest.
-// A simpler loop is faster on small copies, but 30% slower on large ones.
-// The cld() instruction must have been emitted, to set the direction flag(),
-// before calling this function.
-void MacroAssembler::CopyBytes(Register source,
-                               Register destination,
-                               Register length,
-                               Register scratch) {
-  Label short_loop, len4, len8, len12, done, short_string;
-  DCHECK(source.is(esi));
-  DCHECK(destination.is(edi));
-  DCHECK(length.is(ecx));
-  cmp(length, Immediate(4));
-  j(below, &short_string, Label::kNear);
-
-  // Because source is 4-byte aligned in our uses of this function,
-  // we keep source aligned for the rep_movs call by copying the odd bytes
-  // at the end of the ranges.
-  mov(scratch, Operand(source, length, times_1, -4));
-  mov(Operand(destination, length, times_1, -4), scratch);
-
-  cmp(length, Immediate(8));
-  j(below_equal, &len4, Label::kNear);
-  cmp(length, Immediate(12));
-  j(below_equal, &len8, Label::kNear);
-  cmp(length, Immediate(16));
-  j(below_equal, &len12, Label::kNear);
-
-  mov(scratch, ecx);
-  shr(ecx, 2);
-  rep_movs();
-  and_(scratch, Immediate(0x3));
-  add(destination, scratch);
-  jmp(&done, Label::kNear);
-
-  bind(&len12);
-  mov(scratch, Operand(source, 8));
-  mov(Operand(destination, 8), scratch);
-  bind(&len8);
-  mov(scratch, Operand(source, 4));
-  mov(Operand(destination, 4), scratch);
-  bind(&len4);
-  mov(scratch, Operand(source, 0));
-  mov(Operand(destination, 0), scratch);
-  add(destination, length);
-  jmp(&done, Label::kNear);
-
-  bind(&short_string);
-  test(length, length);
-  j(zero, &done, Label::kNear);
-
-  bind(&short_loop);
-  mov_b(scratch, Operand(source, 0));
-  mov_b(Operand(destination, 0), scratch);
-  inc(source);
-  inc(destination);
-  dec(length);
-  j(not_zero, &short_loop);
-
-  bind(&done);
-}
-
 
 void MacroAssembler::InitializeFieldsWithFiller(Register current_address,
                                                 Register end_address,
@@ -3271,20 +3130,21 @@ void MacroAssembler::TestJSArrayForAllocationMemento(
   ExternalReference new_space_allocation_top =
       ExternalReference::new_space_allocation_top_address(isolate());
   const int kMementoMapOffset = JSArray::kSize - kHeapObjectTag;
-  const int kMementoEndOffset = kMementoMapOffset + AllocationMemento::kSize;
+  const int kMementoLastWordOffset =
+      kMementoMapOffset + AllocationMemento::kSize - kPointerSize;
 
   // Bail out if the object is not in new space.
   JumpIfNotInNewSpace(receiver_reg, scratch_reg, no_memento_found);
   // If the object is in new space, we need to check whether it is on the same
   // page as the current top.
-  lea(scratch_reg, Operand(receiver_reg, kMementoEndOffset));
+  lea(scratch_reg, Operand(receiver_reg, kMementoLastWordOffset));
   xor_(scratch_reg, Operand::StaticVariable(new_space_allocation_top));
   test(scratch_reg, Immediate(~Page::kPageAlignmentMask));
   j(zero, &top_check);
   // The object is on a different page than allocation top. Bail out if the
   // object sits on the page boundary as no memento can follow and we cannot
   // touch the memory following it.
-  lea(scratch_reg, Operand(receiver_reg, kMementoEndOffset));
+  lea(scratch_reg, Operand(receiver_reg, kMementoLastWordOffset));
   xor_(scratch_reg, receiver_reg);
   test(scratch_reg, Immediate(~Page::kPageAlignmentMask));
   j(not_zero, no_memento_found);
@@ -3293,9 +3153,9 @@ void MacroAssembler::TestJSArrayForAllocationMemento(
   // If top is on the same page as the current object, we need to check whether
   // we are below top.
   bind(&top_check);
-  lea(scratch_reg, Operand(receiver_reg, kMementoEndOffset));
+  lea(scratch_reg, Operand(receiver_reg, kMementoLastWordOffset));
   cmp(scratch_reg, Operand::StaticVariable(new_space_allocation_top));
-  j(greater, no_memento_found);
+  j(greater_equal, no_memento_found);
   // Memento map check.
   bind(&map_check);
   mov(scratch_reg, Operand(receiver_reg, kMementoMapOffset));

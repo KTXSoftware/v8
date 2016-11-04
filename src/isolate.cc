@@ -42,6 +42,7 @@
 #include "src/runtime-profiler.h"
 #include "src/simulator.h"
 #include "src/snapshot/deserializer.h"
+#include "src/tracing/tracing-category-observer.h"
 #include "src/v8.h"
 #include "src/version.h"
 #include "src/vm-state-inl.h"
@@ -1072,6 +1073,30 @@ Object* Isolate::Throw(Object* exception, MessageLocation* location) {
   if (FLAG_print_all_exceptions) {
     printf("=========================================================\n");
     printf("Exception thrown:\n");
+    if (location) {
+      Handle<Script> script = location->script();
+      Handle<Object> name = Script::GetNameOrSourceURL(script);
+      printf("at ");
+      if (name->IsString() && String::cast(*name)->length() > 0)
+        String::cast(*name)->PrintOn(stdout);
+      else
+        printf("<anonymous>");
+// Script::GetLineNumber and Script::GetColumnNumber can allocate on the heap to
+// initialize the line_ends array, so be careful when calling them.
+#ifdef DEBUG
+      if (AllowHeapAllocation::IsAllowed()) {
+#else
+      if (false) {
+#endif
+        printf(", %d:%d - %d:%d\n",
+               Script::GetLineNumber(script, location->start_pos()) + 1,
+               Script::GetColumnNumber(script, location->start_pos()),
+               Script::GetLineNumber(script, location->end_pos()) + 1,
+               Script::GetColumnNumber(script, location->end_pos()));
+      } else {
+        printf(", line %d\n", script->GetLineNumber(location->start_pos()) + 1);
+      }
+    }
     exception->Print();
     printf("Stack Trace:\n");
     PrintStack(stdout);
@@ -2535,9 +2560,7 @@ bool Isolate::Init(Deserializer* des) {
     }
     load_stub_cache_->Initialize();
     store_stub_cache_->Initialize();
-    if (FLAG_ignition || serializer_enabled()) {
-      interpreter_->Initialize();
-    }
+    interpreter_->Initialize();
 
     heap_.NotifyDeserializationComplete();
   }
@@ -2715,8 +2738,8 @@ void Isolate::DumpAndResetCompilationStats() {
   turbo_statistics_ = nullptr;
   delete hstatistics_;
   hstatistics_ = nullptr;
-  if (FLAG_runtime_call_stats &&
-      !TRACE_EVENT_RUNTIME_CALL_STATS_TRACING_ENABLED()) {
+  if (V8_UNLIKELY(FLAG_runtime_stats ==
+                  v8::tracing::TracingCategoryObserver::ENABLED_BY_NATIVE)) {
     OFStream os(stdout);
     counters()->runtime_call_stats()->Print(os);
     counters()->runtime_call_stats()->Reset();

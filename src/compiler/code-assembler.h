@@ -212,6 +212,8 @@ class V8_EXPORT_PRIVATE CodeAssembler {
     CodeAssembler* assembler_;
   };
 
+  typedef ZoneList<Variable*> VariableList;
+
   // ===========================================================================
   // Base Assembler
   // ===========================================================================
@@ -222,6 +224,7 @@ class V8_EXPORT_PRIVATE CodeAssembler {
   Node* IntPtrConstant(intptr_t value);
   Node* NumberConstant(double value);
   Node* SmiConstant(Smi* value);
+  Node* SmiConstant(int value);
   Node* HeapConstant(Handle<HeapObject> object);
   Node* BooleanConstant(bool value);
   Node* ExternalConstant(ExternalReference address);
@@ -235,6 +238,7 @@ class V8_EXPORT_PRIVATE CodeAssembler {
 
   Node* Parameter(int value);
   void Return(Node* value);
+  void PopAndReturn(Node* pop, Node* value);
 
   void DebugBreak();
   void Comment(const char* format, ...);
@@ -443,6 +447,9 @@ class V8_EXPORT_PRIVATE CodeAssembler {
                Node* receiver, Node* arg1, size_t result_size = 1);
   Node* CallJS(Callable const& callable, Node* context, Node* function,
                Node* receiver, Node* arg1, Node* arg2, size_t result_size = 1);
+  Node* CallJS(Callable const& callable, Node* context, Node* function,
+               Node* receiver, Node* arg1, Node* arg2, Node* arg3,
+               size_t result_size = 1);
 
   // Call to a C function with two arguments.
   Node* CallCFunction2(MachineType return_type, MachineType arg0_type,
@@ -487,12 +494,15 @@ class CodeAssembler::Label {
       CodeAssembler* assembler,
       CodeAssembler::Label::Type type = CodeAssembler::Label::kNonDeferred)
       : CodeAssembler::Label(assembler, 0, nullptr, type) {}
+  Label(CodeAssembler* assembler, const VariableList& merged_variables,
+        CodeAssembler::Label::Type type = CodeAssembler::Label::kNonDeferred)
+      : CodeAssembler::Label(assembler, merged_variables.length(),
+                             &(merged_variables[0]), type) {}
+  Label(CodeAssembler* assembler, size_t count, Variable** vars,
+        CodeAssembler::Label::Type type = CodeAssembler::Label::kNonDeferred);
   Label(CodeAssembler* assembler, CodeAssembler::Variable* merged_variable,
         CodeAssembler::Label::Type type = CodeAssembler::Label::kNonDeferred)
-      : CodeAssembler::Label(assembler, 1, &merged_variable, type) {}
-  Label(CodeAssembler* assembler, int merged_variable_count,
-        CodeAssembler::Variable** merged_variables,
-        CodeAssembler::Label::Type type = CodeAssembler::Label::kNonDeferred);
+      : Label(assembler, 1, &merged_variable, type) {}
   ~Label() {}
 
  private:

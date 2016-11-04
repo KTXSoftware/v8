@@ -1503,9 +1503,14 @@ void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
   __ b(&gotta_call_runtime);
 
   __ bind(&try_shared);
-  // Is the full code valid?
   __ LoadP(entry,
            FieldMemOperand(closure, JSFunction::kSharedFunctionInfoOffset));
+  // Is the shared function marked for tier up?
+  __ LoadlB(temp, FieldMemOperand(
+                      entry, SharedFunctionInfo::kMarkedForTierUpByteOffset));
+  __ TestBit(temp, SharedFunctionInfo::kMarkedForTierUpBitWithinByte, r0);
+  __ bne(&gotta_call_runtime);
+  // Is the full code valid?
   __ LoadP(entry, FieldMemOperand(entry, SharedFunctionInfo::kCodeOffset));
   __ LoadlW(r7, FieldMemOperand(entry, Code::kFlagsOffset));
   __ DecodeField<Code::KindField>(r7);

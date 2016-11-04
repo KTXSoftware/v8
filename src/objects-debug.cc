@@ -1000,6 +1000,24 @@ void JSFixedArrayIterator::JSFixedArrayIteratorVerify() {
   CHECK_LE(index(), array()->length());
 }
 
+void ModuleInfoEntry::ModuleInfoEntryVerify() {
+  Isolate* isolate = GetIsolate();
+  CHECK(IsModuleInfoEntry());
+
+  CHECK(export_name()->IsUndefined(isolate) || export_name()->IsString());
+  CHECK(local_name()->IsUndefined(isolate) || local_name()->IsString());
+  CHECK(import_name()->IsUndefined(isolate) || import_name()->IsString());
+
+  VerifySmiField(kModuleRequestOffset);
+  VerifySmiField(kCellIndexOffset);
+  VerifySmiField(kBegPosOffset);
+  VerifySmiField(kEndPosOffset);
+
+  CHECK_IMPLIES(import_name()->IsString(), module_request() >= 0);
+  CHECK_IMPLIES(export_name()->IsString() && import_name()->IsString(),
+                local_name()->IsUndefined(isolate));
+}
+
 void Module::ModuleVerify() {
   CHECK(IsModule());
 
@@ -1015,8 +1033,13 @@ void Module::ModuleVerify() {
 
   CHECK(module_namespace()->IsUndefined(GetIsolate()) ||
         module_namespace()->IsJSModuleNamespace());
+  if (module_namespace()->IsJSModuleNamespace()) {
+    CHECK_EQ(JSModuleNamespace::cast(module_namespace())->module(), this);
+  }
 
-  // TODO(neis): Check more.
+  CHECK_EQ(requested_modules()->length(), info()->module_requests()->length());
+
+  CHECK_NE(hash(), 0);
 }
 
 void PrototypeInfo::PrototypeInfoVerify() {
@@ -1109,6 +1132,7 @@ void FunctionTemplateInfo::FunctionTemplateInfoVerify() {
   VerifyPointer(instance_template());
   VerifyPointer(signature());
   VerifyPointer(access_check_info());
+  VerifyPointer(cached_property_name());
 }
 
 

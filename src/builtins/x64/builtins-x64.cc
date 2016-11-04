@@ -1121,8 +1121,12 @@ void Builtins::Generate_CompileLazy(MacroAssembler* masm) {
   __ jmp(&gotta_call_runtime);
 
   __ bind(&try_shared);
-  // Is the full code valid?
   __ movp(entry, FieldOperand(closure, JSFunction::kSharedFunctionInfoOffset));
+  // Is the shared function marked for tier up?
+  __ testb(FieldOperand(entry, SharedFunctionInfo::kMarkedForTierUpByteOffset),
+           Immediate(1 << SharedFunctionInfo::kMarkedForTierUpBitWithinByte));
+  __ j(not_zero, &gotta_call_runtime);
+  // Is the full code valid?
   __ movp(entry, FieldOperand(entry, SharedFunctionInfo::kCodeOffset));
   __ movl(rbx, FieldOperand(entry, Code::kFlagsOffset));
   __ andl(rbx, Immediate(Code::KindField::kMask));

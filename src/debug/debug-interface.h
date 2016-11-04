@@ -6,6 +6,7 @@
 #define V8_DEBUG_DEBUG_INTERFACE_H_
 
 #include "include/v8-debug.h"
+#include "include/v8-util.h"
 #include "include/v8.h"
 
 namespace v8 {
@@ -127,6 +128,54 @@ class DebugInterface {
    */
   static void ChangeBreakOnException(Isolate* isolate,
                                      ExceptionBreakState state);
+
+  enum StepAction {
+    StepOut = 0,   // Step out of the current function.
+    StepNext = 1,  // Step to the next statement in the current function.
+    StepIn = 2,    // Step into new functions invoked or the next statement
+                   // in the current function.
+    StepFrame = 3  // Step into a new frame or return to previous frame.
+  };
+
+  static void PrepareStep(Isolate* isolate, StepAction action);
+  static void ClearStepping(Isolate* isolate);
+
+  /**
+   * Native wrapper around v8::internal::Script object.
+   */
+  class Script {
+   public:
+    v8::Isolate* GetIsolate() const;
+
+    ScriptOriginOptions OriginOptions() const;
+    bool WasCompiled() const;
+    int Id() const;
+    int LineOffset() const;
+    int ColumnOffset() const;
+    std::vector<int> LineEnds() const;
+    MaybeLocal<String> Name() const;
+    MaybeLocal<String> SourceURL() const;
+    MaybeLocal<String> SourceMappingURL() const;
+    MaybeLocal<String> ContextData() const;
+    MaybeLocal<String> Source() const;
+
+    /**
+     * script parameter is a wrapper v8::internal::JSObject for
+     * v8::internal::Script.
+     * This function gets v8::internal::Script from v8::internal::JSObject and
+     * wraps it with DebugInterface::Script.
+     * Returns empty local if not called with a valid wrapper of
+     * v8::internal::Script.
+     */
+    static MaybeLocal<Script> Wrap(Isolate* isolate,
+                                   v8::Local<v8::Object> script);
+  };
+
+  /**
+   * Return array of compiled scripts.
+   */
+  static void GetLoadedScripts(Isolate* isolate,
+                               PersistentValueVector<Script>& scripts);
 };
 
 }  // namespace v8

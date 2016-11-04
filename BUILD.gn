@@ -410,7 +410,6 @@ action("js2c") {
     "src/js/symbol.js",
     "src/js/array.js",
     "src/js/string.js",
-    "src/js/regexp.js",
     "src/js/arraybuffer.js",
     "src/js/typedarray.js",
     "src/js/collection.js",
@@ -1245,8 +1244,6 @@ v8_source_set("v8_base") {
     "src/crankshaft/hydrogen-instructions.h",
     "src/crankshaft/hydrogen-load-elimination.cc",
     "src/crankshaft/hydrogen-load-elimination.h",
-    "src/crankshaft/hydrogen-mark-deoptimize.cc",
-    "src/crankshaft/hydrogen-mark-deoptimize.h",
     "src/crankshaft/hydrogen-mark-unreachable.cc",
     "src/crankshaft/hydrogen-mark-unreachable.h",
     "src/crankshaft/hydrogen-osr.cc",
@@ -1391,7 +1388,6 @@ v8_source_set("v8_base") {
     "src/heap/objects-visiting.cc",
     "src/heap/objects-visiting.h",
     "src/heap/page-parallel-job.h",
-    "src/heap/remembered-set.cc",
     "src/heap/remembered-set.h",
     "src/heap/scavenge-job.cc",
     "src/heap/scavenge-job.h",
@@ -1624,6 +1620,7 @@ v8_source_set("v8_base") {
     "src/runtime/runtime-numbers.cc",
     "src/runtime/runtime-object.cc",
     "src/runtime/runtime-operators.cc",
+    "src/runtime/runtime-promise.cc",
     "src/runtime/runtime-proxy.cc",
     "src/runtime/runtime-regexp.cc",
     "src/runtime/runtime-scopes.cc",
@@ -1677,6 +1674,8 @@ v8_source_set("v8_base") {
     "src/tracing/trace-event.h",
     "src/tracing/traced-value.cc",
     "src/tracing/traced-value.h",
+    "src/tracing/tracing-category-observer.cc",
+    "src/tracing/tracing-category-observer.h",
     "src/transitions-inl.h",
     "src/transitions.cc",
     "src/transitions.h",
@@ -1724,8 +1723,6 @@ v8_source_set("v8_base") {
     "src/wasm/wasm-debug.h",
     "src/wasm/wasm-external-refs.cc",
     "src/wasm/wasm-external-refs.h",
-    "src/wasm/wasm-function-name-table.cc",
-    "src/wasm/wasm-function-name-table.h",
     "src/wasm/wasm-interpreter.cc",
     "src/wasm/wasm-interpreter.h",
     "src/wasm/wasm-js.cc",
@@ -1743,6 +1740,7 @@ v8_source_set("v8_base") {
     "src/zone/accounting-allocator.h",
     "src/zone/zone-allocator.h",
     "src/zone/zone-allocator.h",
+    "src/zone/zone-chunk-list.h",
     "src/zone/zone-containers.h",
     "src/zone/zone-segment.cc",
     "src/zone/zone-segment.h",
@@ -2193,16 +2191,8 @@ v8_component("v8_libbase") {
     "src/base/adapters.h",
     "src/base/atomic-utils.h",
     "src/base/atomicops.h",
-    "src/base/atomicops_internals_arm64_gcc.h",
-    "src/base/atomicops_internals_arm_gcc.h",
     "src/base/atomicops_internals_atomicword_compat.h",
-    "src/base/atomicops_internals_mac.h",
-    "src/base/atomicops_internals_mips64_gcc.h",
-    "src/base/atomicops_internals_mips_gcc.h",
-    "src/base/atomicops_internals_s390_gcc.h",
-    "src/base/atomicops_internals_tsan.h",
-    "src/base/atomicops_internals_x86_gcc.cc",
-    "src/base/atomicops_internals_x86_gcc.h",
+    "src/base/atomicops_internals_portable.h",
     "src/base/atomicops_internals_x86_msvc.h",
     "src/base/base-export.h",
     "src/base/bits.cc",
@@ -2560,6 +2550,11 @@ v8_executable("d8") {
   if (v8_enable_i18n_support) {
     deps += [ "//third_party/icu" ]
   }
+
+  defines = []
+  if (v8_enable_inspector_override) {
+    defines += [ "V8_INSPECTOR_ENABLED" ]
+  }
 }
 
 v8_isolate_run("d8") {
@@ -2818,6 +2813,26 @@ v8_source_set("wasm_code_fuzzer") {
 }
 
 v8_fuzzer("wasm_code_fuzzer") {
+}
+
+v8_source_set("wasm_call_fuzzer") {
+  sources = [
+    "test/fuzzer/wasm-call.cc",
+  ]
+
+  deps = [
+    ":fuzzer_support",
+    ":wasm_module_runner",
+    ":wasm_test_signatures",
+  ]
+
+  configs = [
+    ":external_config",
+    ":internal_config_base",
+  ]
+}
+
+v8_fuzzer("wasm_call_fuzzer") {
 }
 
 v8_source_set("lib_wasm_section_fuzzer") {

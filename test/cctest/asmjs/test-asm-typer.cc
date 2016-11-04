@@ -64,17 +64,18 @@ class AsmTyperHarnessBuilder {
     }
 
     outer_scope_ = info.script_scope();
-    module_ =
-        info.scope()->declarations()->at(0)->AsFunctionDeclaration()->fun();
+    module_ = info.scope()
+                  ->declarations()
+                  ->AtForTest(0)
+                  ->AsFunctionDeclaration()
+                  ->fun();
     typer_.reset(new AsmTyper(isolate_, zone_, *script_, module_));
 
     if (validation_type_ == ValidateStatement ||
         validation_type_ == ValidateExpression) {
       fun_scope_.reset(new AsmTyper::FunctionScope(typer_.get()));
 
-      auto* decls = module_->scope()->declarations();
-      for (int ii = 0; ii < decls->length(); ++ii) {
-        Declaration* decl = decls->at(ii);
+      for (Declaration* decl : *module_->scope()->declarations()) {
         if (FunctionDeclaration* fun_decl = decl->AsFunctionDeclaration()) {
           fun_decl_ = fun_decl;
           break;
@@ -505,14 +506,15 @@ TEST(ErrorsInGlobalVariableDefinition) {
     const char* error_message;
   } kTests[] = {
       {"var v;", "Global variable missing initializer"},
-      {"var v = uninitialized;", "Invalid global variable initializer"},
+      {"var v = uninitialized;", "Undeclared identifier in global"},
       {"var v = 'use asm';", "type annotation - forbidden literal"},
       {"var v = 4294967296;", " - forbidden literal"},
-      {"var v = not_fround;", "Invalid global variable initializer"},
+      {"var v = not_fround;", "initialize a global must be a const"},
       {"var v = not_fround(1);", "expected call fround(literal)"},
       {"var v = __fround__(1.0);", "expected call fround(literal)"},
       {"var v = fround(1.0, 1.0);", "expected call fround(literal)"},
       {"var v = fround(not_fround);", "literal argument for call to fround"},
+      {"var v = i?0:1;", "Invalid global variable initializer"},
       {"var v = stdlib.nan", "Invalid import"},
       {"var v = stdlib.Math.nan", "Invalid import"},
       {"var v = stdlib.Mathh.E", "Invalid import"},
@@ -788,6 +790,19 @@ TEST(ErrorsInFunction) {
        "  var c = 0;\n"
        "}\n",
        "Local variable missing initializer in asm.js module"},
+      {"function f(a) {\n"
+       "  a = a|0;\n"
+       "  var x = a;\n"
+       "}\n",
+       "variable declaration initializer must be const"},
+      {"function f() {\n"
+       "  var x = 1+i;\n"
+       "}\n",
+       "should be a literal, const, or fround(literal"},
+      {"function f() {\n"
+       "  var x = a;\n"
+       "}\n",
+       "Undeclared identifier in variable declaration initializer"},
       {"function f() {\n"
        "  function ff() {}\n"
        "}\n",
@@ -812,6 +827,19 @@ TEST(ErrorsInFunction) {
        " return 2147483648;\n"
        "}\n",
        "Invalid literal in return statement"},
+      {"function f(a) {\n"
+       "  a = a|0;\n"
+       "  return a;\n"
+       "}\n",
+       "in return statement is not const"},
+      {"function f() {\n"
+       "  return a;\n"
+       "}\n",
+       "Undeclared identifier in return statement"},
+      {"function f() {\n"
+       "  return i?0:1;\n"
+       "}\n",
+       "Invalid return type expression"},
       {"function f() {\n"
        "  return stdlib.Math.E;"
        "}\n",

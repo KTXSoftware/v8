@@ -41,8 +41,11 @@ CodeAssembler::CodeAssembler(Isolate* isolate, Zone* zone,
 CodeAssembler::CodeAssembler(Isolate* isolate, Zone* zone, int parameter_count,
                              Code::Flags flags, const char* name)
     : CodeAssembler(isolate, zone,
-                    Linkage::GetJSCallDescriptor(zone, false, parameter_count,
-                                                 CallDescriptor::kNoFlags),
+                    Linkage::GetJSCallDescriptor(
+                        zone, false, parameter_count,
+                        Code::ExtractKindFromFlags(flags) == Code::BUILTIN
+                            ? CallDescriptor::kPushArgumentCount
+                            : CallDescriptor::kNoFlags),
                     flags, name) {}
 
 CodeAssembler::CodeAssembler(Isolate* isolate, Zone* zone,
@@ -110,6 +113,10 @@ Node* CodeAssembler::SmiConstant(Smi* value) {
   return BitcastWordToTaggedSigned(IntPtrConstant(bit_cast<intptr_t>(value)));
 }
 
+Node* CodeAssembler::SmiConstant(int value) {
+  return SmiConstant(Smi::FromInt(value));
+}
+
 Node* CodeAssembler::HeapConstant(Handle<HeapObject> object) {
   return raw_assembler_->HeapConstant(object);
 }
@@ -174,6 +181,10 @@ Node* CodeAssembler::Parameter(int value) {
 
 void CodeAssembler::Return(Node* value) {
   return raw_assembler_->Return(value);
+}
+
+void CodeAssembler::PopAndReturn(Node* pop, Node* value) {
+  return raw_assembler_->PopAndReturn(pop, value);
 }
 
 void CodeAssembler::DebugBreak() { raw_assembler_->DebugBreak(); }
@@ -930,6 +941,24 @@ Node* CodeAssembler::CallJS(Callable const& callable, Node* context,
   return CallStubN(callable.descriptor(), argc + 1, target, args, result_size);
 }
 
+Node* CodeAssembler::CallJS(Callable const& callable, Node* context,
+                            Node* function, Node* receiver, Node* arg1,
+                            Node* arg2, Node* arg3, size_t result_size) {
+  const int argc = 3;
+  Node* target = HeapConstant(callable.code());
+
+  Node** args = zone()->NewArray<Node*>(argc + 4);
+  args[0] = function;
+  args[1] = Int32Constant(argc);
+  args[2] = receiver;
+  args[3] = arg1;
+  args[4] = arg2;
+  args[5] = arg3;
+  args[6] = context;
+
+  return CallStubN(callable.descriptor(), argc + 1, target, args, result_size);
+}
+
 Node* CodeAssembler::CallCFunction2(MachineType return_type,
                                     MachineType arg0_type,
                                     MachineType arg1_type, Node* function,
@@ -1040,16 +1069,15 @@ bool CodeAssembler::Variable::IsBound() const {
   return impl_->value_ != nullptr;
 }
 
-CodeAssembler::Label::Label(CodeAssembler* assembler, int merged_value_count,
-                            CodeAssembler::Variable** merged_variables,
-                            CodeAssembler::Label::Type type)
+CodeAssembler::Label::Label(CodeAssembler* assembler, size_t vars_count,
+                            Variable** vars, CodeAssembler::Label::Type type)
     : bound_(false), merge_count_(0), assembler_(assembler), label_(nullptr) {
   void* buffer = assembler->zone()->New(sizeof(RawMachineLabel));
   label_ = new (buffer)
       RawMachineLabel(type == kDeferred ? RawMachineLabel::kDeferred
                                         : RawMachineLabel::kNonDeferred);
-  for (int i = 0; i < merged_value_count; ++i) {
-    variable_phis_[merged_variables[i]->impl_] = nullptr;
+  for (size_t i = 0; i < vars_count; ++i) {
+    variable_phis_[vars[i]->impl_] = nullptr;
   }
 }
 

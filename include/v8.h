@@ -463,16 +463,6 @@ class WeakCallbackInfo {
 enum class WeakCallbackType { kParameter, kInternalFields, kFinalizer };
 
 /**
- * A reporter class that embedder will use to report reachable references found
- * by EmbedderHeapTracer.
- */
-class V8_EXPORT EmbedderReachableReferenceReporter {
- public:
-  virtual void ReportExternalReference(Value* object) = 0;
-  virtual ~EmbedderReachableReferenceReporter() = default;
-};
-
-/**
  * An object reference that is independent of any handle scope.  Where
  * a Local handle only lives as long as the HandleScope in which it was
  * allocated, a PersistentBase handle remains valid until it is explicitly
@@ -569,18 +559,11 @@ template <class T> class PersistentBase {
   V8_INLINE void ClearWeak() { ClearWeak<void>(); }
 
   /**
-   * Deprecated.
-   * TODO(hlopko): remove once migration to reporter is finished.
-   */
-  V8_INLINE void RegisterExternalReference(Isolate* isolate) const {}
-
-  /**
    * Allows the embedder to tell the v8 garbage collector that a certain object
    * is alive. Only allowed when the embedder is asked to trace its heap by
    * EmbedderHeapTracer.
    */
-  V8_INLINE void RegisterExternalReference(
-      EmbedderReachableReferenceReporter* reporter) const;
+  V8_INLINE void RegisterExternalReference(Isolate* isolate) const;
 
   /**
    * Marks the reference to this object independent. Garbage collector is free
@@ -3906,10 +3889,6 @@ class V8_EXPORT WasmCompiledModule : public Object {
   // uncompiled bytes.
   SerializedModule Serialize();
 
-  // TODO(mtrofin): Back-compat. Move to private once change lands in Chrome.
-  // The resulting wasm setup won't have its uncompiled bytes available.
-  static MaybeLocal<WasmCompiledModule> Deserialize(
-      Isolate* isolate, const SerializedModule& serialized_module);
   // If possible, deserialize the module, otherwise compile it from the provided
   // uncompiled bytes.
   static MaybeLocal<WasmCompiledModule> DeserializeOrCompile(
@@ -3919,7 +3898,8 @@ class V8_EXPORT WasmCompiledModule : public Object {
 
  private:
   static MaybeLocal<WasmCompiledModule> Deserialize(
-      Isolate* isolate, const CallerOwnedBuffer& serialized_module);
+      Isolate* isolate, const CallerOwnedBuffer& serialized_module,
+      const CallerOwnedBuffer& wire_bytes);
   static MaybeLocal<WasmCompiledModule> Compile(Isolate* isolate,
                                                 const uint8_t* start,
                                                 size_t length);
@@ -4637,6 +4617,8 @@ class V8_EXPORT Template : public Data {
    */
   void Set(Local<Name> name, Local<Data> value,
            PropertyAttribute attributes = None);
+  void SetPrivate(Local<Private> name, Local<Data> value,
+                  PropertyAttribute attributes = None);
   V8_INLINE void Set(Isolate* isolate, const char* name, Local<Data> value);
 
   void SetAccessorProperty(
@@ -4687,6 +4669,14 @@ class V8_EXPORT Template : public Data {
       Local<Value> data = Local<Value>(), PropertyAttribute attribute = None,
       Local<AccessorSignature> signature = Local<AccessorSignature>(),
       AccessControl settings = DEFAULT);
+
+  /**
+   * Like SetNativeDataProperty, but V8 will replace the native data property
+   * with a real data property on first access.
+   */
+  void SetLazyDataProperty(Local<Name> name, AccessorNameGetterCallback getter,
+                           Local<Value> data = Local<Value>(),
+                           PropertyAttribute attribute = None);
 
   /**
    * During template instantiation, sets the value with the intrinsic property
@@ -5107,6 +5097,14 @@ class V8_EXPORT FunctionTemplate : public Template {
       Isolate* isolate, FunctionCallback callback,
       experimental::FastAccessorBuilder* fast_handler = nullptr,
       Local<Value> data = Local<Value>(),
+      Local<Signature> signature = Local<Signature>(), int length = 0);
+
+  /**
+   * Creates a function template backed/cached by a private property.
+   */
+  static Local<FunctionTemplate> NewWithCache(
+      Isolate* isolate, FunctionCallback callback,
+      Local<Private> cache_property, Local<Value> data = Local<Value>(),
       Local<Signature> signature = Local<Signature>(), int length = 0);
 
   /** Returns the unique function instance in the current execution context.*/
@@ -5690,6 +5688,10 @@ class V8_EXPORT ResourceConstraints {
   void set_code_range_size(size_t limit_in_mb) {
     code_range_size_ = limit_in_mb;
   }
+  size_t max_zone_pool_size() const { return max_zone_pool_size_; }
+  void set_max_zone_pool_size(const size_t bytes) {
+    max_zone_pool_size_ = bytes;
+  }
 
  private:
   int max_semi_space_size_;
@@ -5697,6 +5699,7 @@ class V8_EXPORT ResourceConstraints {
   int max_executable_size_;
   uint32_t* stack_limit_;
   size_t code_range_size_;
+  size_t max_zone_pool_size_;
 };
 
 
@@ -6159,11 +6162,11 @@ class V8_EXPORT PersistentHandleVisitor {  // NOLINT
 enum class MemoryPressureLevel { kNone, kModerate, kCritical };
 
 /**
- * Interface for tracing through the embedder heap. During the v8 garbage
+ * Interface for tracing through the embedder heap. During a v8 garbage
  * collection, v8 collects hidden fields of all potential wrappers, and at the
  * end of its marking phase iterates the collection and asks the embedder to
- * trace through its heap and use reporter to report each js object reachable
- * from any of the given wrappers.
+ * trace through its heap and use reporter to report each JavaScript object
+ * reachable from any of the given wrappers.
  *
  * Before the first call to the TraceWrappersFrom function TracePrologue will be
  * called. When the garbage collection cycle is finished, TraceEpilogue will be
@@ -6181,30 +6184,26 @@ class V8_EXPORT EmbedderHeapTracer {
   };
 
   /**
-   * V8 will call this method with internal fields of found wrappers. The
-   * embedder is expected to store them in its marking deque and trace
-   * reachable wrappers from them when called through |AdvanceTracing|.
+   * Called by v8 to register internal fields of found wrappers.
+   *
+   * The embedder is expected to store them somewhere and trace reachable
+   * wrappers from them when called through |AdvanceTracing|.
    */
   virtual void RegisterV8References(
       const std::vector<std::pair<void*, void*> >& internal_fields) = 0;
 
   /**
-   * Deprecated.
-   * TODO(hlopko) Remove once the migration to reporter is finished.
+   * Called at the beginning of a GC cycle.
    */
-  virtual void TracePrologue() {}
+  virtual void TracePrologue() = 0;
 
   /**
-   * V8 will call this method at the beginning of a GC cycle. Embedder is
-   * expected to use EmbedderReachableReferenceReporter for reporting all
-   * reachable v8 objects.
-   */
-  virtual void TracePrologue(EmbedderReachableReferenceReporter* reporter) {}
-
-  /**
-   * Embedder is expected to trace its heap starting from wrappers reported by
-   * RegisterV8References method, and use reporter for all reachable wrappers.
-   * Embedder is expected to stop tracing by the given deadline.
+   * Called to to make a tracing step in the embedder.
+   *
+   * The embedder is expected to trace its heap starting from wrappers reported
+   * by RegisterV8References method, and report back all reachable wrappers.
+   * Furthermore, the embedder is expected to stop tracing by the given
+   * deadline.
    *
    * Returns true if there is still work to do.
    */
@@ -6212,22 +6211,25 @@ class V8_EXPORT EmbedderHeapTracer {
                               AdvanceTracingActions actions) = 0;
 
   /**
-   * V8 will call this method at the end of a GC cycle.
+   * Called at the end of a GC cycle.
    *
    * Note that allocation is *not* allowed within |TraceEpilogue|.
    */
   virtual void TraceEpilogue() = 0;
 
   /**
-   * Let embedder know v8 entered final marking pause (no more incremental steps
-   * will follow).
+   * Called upon entering the final marking pause. No more incremental marking
+   * steps will follow this call.
    */
-  virtual void EnterFinalPause() {}
+  virtual void EnterFinalPause() = 0;
 
   /**
-   * Throw away all intermediate data and reset to the initial state.
+   * Called when tracing is aborted.
+   *
+   * The embedder is expected to throw away all intermediate data and reset to
+   * the initial state.
    */
-  virtual void AbortTracing() {}
+  virtual void AbortTracing() = 0;
 
   /**
    * Returns the number of wrappers that are still to be traced by the embedder.
@@ -6237,6 +6239,19 @@ class V8_EXPORT EmbedderHeapTracer {
  protected:
   virtual ~EmbedderHeapTracer() = default;
 };
+
+/**
+ * Callback to the embedder used in SnapshotCreator to handle internal fields.
+ */
+typedef StartupData (*SerializeInternalFieldsCallback)(Local<Object> holder,
+                                                       int index);
+
+/**
+ * Callback to the embedder used to deserialize internal fields.
+ */
+typedef void (*DeserializeInternalFieldsCallback)(Local<Object> holder,
+                                                  int index,
+                                                  StartupData payload);
 
 /**
  * Isolate represents an isolated instance of the V8 engine.  V8 isolates have
@@ -6260,7 +6275,8 @@ class V8_EXPORT Isolate {
           create_histogram_callback(nullptr),
           add_histogram_sample_callback(nullptr),
           array_buffer_allocator(nullptr),
-          external_references(nullptr) {}
+          external_references(nullptr),
+          deserialize_internal_fields_callback(nullptr) {}
 
     /**
      * The optional entry_hook allows the host application to provide the
@@ -6316,6 +6332,12 @@ class V8_EXPORT Isolate {
      * entire lifetime of the isolate.
      */
     intptr_t* external_references;
+
+    /**
+     * Specifies an optional callback to deserialize internal fields. It
+     * should match the SerializeInternalFieldCallback used to serialize.
+     */
+    DeserializeInternalFieldsCallback deserialize_internal_fields_callback;
   };
 
 
@@ -7520,6 +7542,9 @@ class V8_EXPORT V8 {
                          int* index);
   static Local<Value> GetEternal(Isolate* isolate, int index);
 
+  static void RegisterExternallyReferencedObject(internal::Object** object,
+                                                 internal::Isolate* isolate);
+
   template <class K, class V, class T>
   friend class PersistentValueMapBase;
 
@@ -7581,10 +7606,12 @@ class SnapshotCreator {
    * This must not be called from within a handle scope.
    * \param function_code_handling whether to include compiled function code
    *        in the snapshot.
+   * \param callback to serialize embedder-set internal fields.
    * \returns { nullptr, 0 } on failure, and a startup snapshot on success. The
    *        caller acquires ownership of the data array in the return value.
    */
-  StartupData CreateBlob(FunctionCodeHandling function_code_handling);
+  StartupData CreateBlob(FunctionCodeHandling function_code_handling,
+                         SerializeInternalFieldsCallback callback = nullptr);
 
   // Disallow copying and assigning.
   SnapshotCreator(const SnapshotCreator&) = delete;
@@ -7837,7 +7864,6 @@ class V8_EXPORT ExtensionConfiguration {
   const int name_count_;
   const char** names_;
 };
-
 
 /**
  * A sandboxed execution context with its own set of built-in objects
@@ -8303,8 +8329,8 @@ class Internals {
   static const int kNodeIsPartiallyDependentShift = 4;
   static const int kNodeIsActiveShift = 4;
 
-  static const int kJSObjectType = 0xbb;
-  static const int kJSApiObjectType = 0xba;
+  static const int kJSObjectType = 0xbc;
+  static const int kJSApiObjectType = 0xbb;
   static const int kFirstNonstringType = 0x80;
   static const int kOddballType = 0x83;
   static const int kForeignType = 0x87;
@@ -8580,10 +8606,11 @@ P* PersistentBase<T>::ClearWeak() {
 }
 
 template <class T>
-void PersistentBase<T>::RegisterExternalReference(
-    EmbedderReachableReferenceReporter* reporter) const {
+void PersistentBase<T>::RegisterExternalReference(Isolate* isolate) const {
   if (IsEmpty()) return;
-  reporter->ReportExternalReference(this->val_);
+  V8::RegisterExternallyReferencedObject(
+      reinterpret_cast<internal::Object**>(this->val_),
+      reinterpret_cast<internal::Isolate*>(isolate));
 }
 
 template <class T>

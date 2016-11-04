@@ -443,13 +443,8 @@ void Builtins::Generate_ObjectProtoToString(CodeStubAssembler* assembler) {
       Node* map = assembler->LoadMap(receiver);
 
       // Return object if the proxy {receiver} is not callable.
-      assembler->Branch(
-          assembler->Word32Equal(
-              assembler->Word32And(
-                  assembler->LoadMapBitField(map),
-                  assembler->Int32Constant(1 << Map::kIsCallable)),
-              assembler->Int32Constant(0)),
-          &return_object, &return_function);
+      assembler->Branch(assembler->IsCallableMap(map), &return_function,
+                        &return_object);
     }
 
     // Default
@@ -488,23 +483,18 @@ void Builtins::Generate_ObjectCreate(CodeStubAssembler* a) {
     a->GotoUnless(a->WordEqual(a->LoadElements(properties),
                                a->LoadRoot(Heap::kEmptyFixedArrayRootIndex)),
                   &call_runtime);
-    // Jump to the runtime for slow objects.
+    // Handle dictionary objects or fast objects with properties in runtime.
     Node* bit_field3 = a->LoadMapBitField3(properties_map);
-    Node* is_fast_map = a->Word32Equal(
-        a->BitFieldDecode<Map::DictionaryMap>(bit_field3), a->Int32Constant(0));
-    a->GotoUnless(is_fast_map, &call_runtime);
-
-    a->Branch(
-        a->WordEqual(
-            a->BitFieldDecodeWord<Map::NumberOfOwnDescriptorsBits>(bit_field3),
-            a->IntPtrConstant(0)),
-        &no_properties, &call_runtime);
+    a->GotoIf(a->IsSetWord32<Map::DictionaryMap>(bit_field3), &call_runtime);
+    a->Branch(a->IsSetWord32<Map::NumberOfOwnDescriptorsBits>(bit_field3),
+              &call_runtime, &no_properties);
   }
 
   // Create a new object with the given prototype.
   a->Bind(&no_properties);
   {
     Variable map(a, MachineRepresentation::kTagged);
+    Variable properties(a, MachineRepresentation::kTagged);
     Label non_null_proto(a), instantiate_map(a), good(a);
 
     a->Branch(a->WordEqual(prototype, a->NullConstant()), &good,
@@ -512,13 +502,16 @@ void Builtins::Generate_ObjectCreate(CodeStubAssembler* a) {
 
     a->Bind(&good);
     {
-      map.Bind(a->LoadContextElement(context,
-                                     Context::OBJECT_WITH_NULL_PROTOTYPE_MAP));
+      map.Bind(a->LoadContextElement(
+          context, Context::SLOW_OBJECT_WITH_NULL_PROTOTYPE_MAP));
+      properties.Bind(
+          a->AllocateNameDictionary(NameDictionary::kInitialCapacity));
       a->Goto(&instantiate_map);
     }
 
     a->Bind(&non_null_proto);
     {
+      properties.Bind(a->EmptyFixedArrayConstant());
       Node* object_function =
           a->LoadContextElement(context, Context::OBJECT_FUNCTION_INDEX);
       Node* object_function_map = a->LoadObjectField(
@@ -539,7 +532,8 @@ void Builtins::Generate_ObjectCreate(CodeStubAssembler* a) {
 
     a->Bind(&instantiate_map);
     {
-      Node* instance = a->AllocateJSObjectFromMap(map.value());
+      Node* instance =
+          a->AllocateJSObjectFromMap(map.value(), properties.value());
       a->Return(instance);
     }
   }

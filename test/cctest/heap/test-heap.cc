@@ -791,7 +791,7 @@ TEST(BytecodeArray) {
   // Perform a full garbage collection and force the constant pool to be on an
   // evacuation candidate.
   Page* evac_page = Page::FromAddress(constant_pool->address());
-  evac_page->SetFlag(MemoryChunk::FORCE_EVACUATION_CANDIDATE_FOR_TESTING);
+  heap::ForceEvacuationCandidate(evac_page);
   CcTest::CollectAllGarbage(i::Heap::kFinalizeIncrementalMarkingMask);
 
   // BytecodeArray should survive.
@@ -2657,8 +2657,8 @@ TEST(InstanceOfStubWriteBarrier) {
 namespace {
 
 int GetProfilerTicks(SharedFunctionInfo* shared) {
-  return FLAG_ignition ? shared->profiler_ticks()
-                       : shared->code()->profiler_ticks();
+  return FLAG_ignition || FLAG_turbo ? shared->profiler_ticks()
+                                     : shared->code()->profiler_ticks();
 }
 
 }  // namespace
@@ -4358,7 +4358,7 @@ TEST(Regress514122) {
   // Heap is ready, force {lit_page} to become an evacuation candidate and
   // simulate incremental marking to enqueue optimized code map.
   FLAG_manual_evacuation_candidates_selection = true;
-  evac_page->SetFlag(MemoryChunk::FORCE_EVACUATION_CANDIDATE_FOR_TESTING);
+  heap::ForceEvacuationCandidate(evac_page);
   heap::SimulateIncrementalMarking(heap);
 
   // No matter whether reachable or not, {boomer} is doomed.
@@ -4557,7 +4557,7 @@ TEST(LargeObjectSlotRecording) {
   heap::SimulateFullSpace(heap->old_space());
   Handle<FixedArray> lit = isolate->factory()->NewFixedArray(4, TENURED);
   Page* evac_page = Page::FromAddress(lit->address());
-  evac_page->SetFlag(MemoryChunk::FORCE_EVACUATION_CANDIDATE_FOR_TESTING);
+  heap::ForceEvacuationCandidate(evac_page);
   FixedArray* old_location = *lit;
 
   // Allocate a large object.
@@ -5563,8 +5563,7 @@ HEAP_TEST(Regress538257) {
                     heap->CanExpandOldGeneration(old_space->AreaSize());
          i++) {
       objects[i] = i_isolate->factory()->NewFixedArray(kFixedArrayLen, TENURED);
-      Page::FromAddress(objects[i]->address())
-          ->SetFlag(MemoryChunk::FORCE_EVACUATION_CANDIDATE_FOR_TESTING);
+      heap::ForceEvacuationCandidate(Page::FromAddress(objects[i]->address()));
     }
     heap::SimulateFullSpace(old_space);
     heap->CollectAllGarbage(i::Heap::kFinalizeIncrementalMarkingMask,
@@ -6526,7 +6525,7 @@ HEAP_TEST(Regress589413) {
       AlwaysAllocateScope always_allocate(isolate);
       Handle<HeapObject> ec_obj = factory->NewFixedArray(5000, TENURED);
       Page* ec_page = Page::FromAddress(ec_obj->address());
-      ec_page->SetFlag(MemoryChunk::FORCE_EVACUATION_CANDIDATE_FOR_TESTING);
+      heap::ForceEvacuationCandidate(ec_page);
       // Make all arrays point to evacuation candidate so that
       // slots are recorded for them.
       for (size_t j = 0; j < arrays.size(); j++) {
@@ -6733,8 +6732,7 @@ TEST(Regress631969) {
   heap::SimulateFullSpace(heap->old_space());
   Handle<String> s1 = factory->NewStringFromStaticChars("123456789", TENURED);
   Handle<String> s2 = factory->NewStringFromStaticChars("01234", TENURED);
-  Page::FromAddress(s1->address())
-      ->SetFlag(MemoryChunk::FORCE_EVACUATION_CANDIDATE_FOR_TESTING);
+  heap::ForceEvacuationCandidate(Page::FromAddress(s1->address()));
 
   heap::SimulateIncrementalMarking(heap, false);
 
@@ -6921,49 +6919,6 @@ TEST(ContinuousRightTrimFixedArrayInBlackArea) {
   }
 
   heap::GcAndSweep(heap, OLD_SPACE);
-}
-
-TEST(SlotFilteringAfterBlackAreas) {
-  FLAG_black_allocation = true;
-  CcTest::InitializeVM();
-  v8::HandleScope scope(CcTest::isolate());
-  Heap* heap = CcTest::heap();
-  Isolate* isolate = heap->isolate();
-  MarkCompactCollector* mark_compact_collector = heap->mark_compact_collector();
-  CcTest::CollectAllGarbage(i::Heap::kFinalizeIncrementalMarkingMask);
-
-  i::MarkCompactCollector* collector = heap->mark_compact_collector();
-  i::IncrementalMarking* marking = heap->incremental_marking();
-  if (collector->sweeping_in_progress()) {
-    collector->EnsureSweepingCompleted();
-  }
-  CHECK(marking->IsMarking() || marking->IsStopped());
-  if (marking->IsStopped()) {
-    heap->StartIncrementalMarking(i::Heap::kNoGCFlags,
-                                  i::GarbageCollectionReason::kTesting);
-  }
-  CHECK(marking->IsMarking());
-  marking->StartBlackAllocationForTesting();
-
-  // Ensure that we allocate a new page, set up a bump pointer area, and
-  // perform the allocation in a black area.
-  heap::SimulateFullSpace(heap->old_space());
-  Handle<FixedArray> array = isolate->factory()->NewFixedArray(10, TENURED);
-  Page* page = Page::FromAddress(array->address());
-
-  // After allocation we empty the allocation info to limit the black area
-  // only on the allocated array.
-  heap->old_space()->EmptyAllocationInfo();
-
-  // Slots in the black area are part of the black object.
-  CHECK(mark_compact_collector->IsSlotInBlackObject(page, array->address()));
-  CHECK(mark_compact_collector->IsSlotInBlackObject(
-      page, array->address() + array->Size() - kPointerSize));
-
-  // Slots after the black area are not part of the black object and have to
-  // be filtered out.
-  CHECK(!mark_compact_collector->IsSlotInBlackObject(
-      page, array->address() + array->Size()));
 }
 
 TEST(Regress618958) {

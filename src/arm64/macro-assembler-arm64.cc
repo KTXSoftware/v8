@@ -1532,11 +1532,12 @@ void MacroAssembler::TestJSArrayForAllocationMemento(Register receiver,
   ExternalReference new_space_allocation_top_adr =
       ExternalReference::new_space_allocation_top_address(isolate());
   const int kMementoMapOffset = JSArray::kSize - kHeapObjectTag;
-  const int kMementoEndOffset = kMementoMapOffset + AllocationMemento::kSize;
+  const int kMementoLastWordOffset =
+      kMementoMapOffset + AllocationMemento::kSize - kPointerSize;
 
   // Bail out if the object is not in new space.
   JumpIfNotInNewSpace(receiver, no_memento_found);
-  Add(scratch1, receiver, kMementoEndOffset);
+  Add(scratch1, receiver, kMementoLastWordOffset);
   // If the object is in new space, we need to check whether it is on the same
   // page as the current top.
   Mov(scratch2, new_space_allocation_top_adr);
@@ -1558,7 +1559,7 @@ void MacroAssembler::TestJSArrayForAllocationMemento(Register receiver,
   Mov(scratch2, new_space_allocation_top_adr);
   Ldr(scratch2, MemOperand(scratch2));
   Cmp(scratch1, scratch2);
-  B(gt, no_memento_found);
+  B(ge, no_memento_found);
   // Memento map check.
   bind(&map_check);
   Ldr(scratch1, MemOperand(receiver, kMementoMapOffset));
@@ -2168,62 +2169,6 @@ void MacroAssembler::ClampDoubleToUint8(Register output,
   // Values greater than 255 have already been clamped to 255.
   Fcvtnu(output, dbl_scratch);
 }
-
-
-void MacroAssembler::CopyBytes(Register dst,
-                               Register src,
-                               Register length,
-                               Register scratch,
-                               CopyHint hint) {
-  UseScratchRegisterScope temps(this);
-  Register tmp1 = temps.AcquireX();
-  Register tmp2 = temps.AcquireX();
-  DCHECK(!AreAliased(src, dst, length, scratch, tmp1, tmp2));
-  DCHECK(!AreAliased(src, dst, csp));
-
-  if (emit_debug_code()) {
-    // Check copy length.
-    Cmp(length, 0);
-    Assert(ge, kUnexpectedNegativeValue);
-
-    // Check src and dst buffers don't overlap.
-    Add(scratch, src, length);  // Calculate end of src buffer.
-    Cmp(scratch, dst);
-    Add(scratch, dst, length);  // Calculate end of dst buffer.
-    Ccmp(scratch, src, ZFlag, gt);
-    Assert(le, kCopyBuffersOverlap);
-  }
-
-  Label short_copy, short_loop, bulk_loop, done;
-
-  if ((hint == kCopyLong || hint == kCopyUnknown) && !FLAG_optimize_for_size) {
-    Register bulk_length = scratch;
-    int pair_size = 2 * kXRegSize;
-    int pair_mask = pair_size - 1;
-
-    Bic(bulk_length, length, pair_mask);
-    Cbz(bulk_length, &short_copy);
-    Bind(&bulk_loop);
-    Sub(bulk_length, bulk_length, pair_size);
-    Ldp(tmp1, tmp2, MemOperand(src, pair_size, PostIndex));
-    Stp(tmp1, tmp2, MemOperand(dst, pair_size, PostIndex));
-    Cbnz(bulk_length, &bulk_loop);
-
-    And(length, length, pair_mask);
-  }
-
-  Bind(&short_copy);
-  Cbz(length, &done);
-  Bind(&short_loop);
-  Sub(length, length, 1);
-  Ldrb(tmp1, MemOperand(src, 1, PostIndex));
-  Strb(tmp1, MemOperand(dst, 1, PostIndex));
-  Cbnz(length, &short_loop);
-
-
-  Bind(&done);
-}
-
 
 void MacroAssembler::InitializeFieldsWithFiller(Register current_address,
                                                 Register end_address,
@@ -3806,79 +3751,6 @@ void MacroAssembler::EmitSeqStringSetCharCheck(
   DCHECK_EQ(static_cast<Smi*>(0), Smi::kZero);
   Cmp(index, 0);
   Check(ge, kIndexIsNegative);
-}
-
-
-void MacroAssembler::CheckAccessGlobalProxy(Register holder_reg,
-                                            Register scratch1,
-                                            Register scratch2,
-                                            Label* miss) {
-  DCHECK(!AreAliased(holder_reg, scratch1, scratch2));
-  Label same_contexts;
-
-  // Load current lexical context from the active StandardFrame, which
-  // may require crawling past STUB frames.
-  Label load_context;
-  Label has_context;
-  Mov(scratch2, fp);
-  bind(&load_context);
-  Ldr(scratch1,
-      MemOperand(scratch2, CommonFrameConstants::kContextOrFrameTypeOffset));
-  JumpIfNotSmi(scratch1, &has_context);
-  Ldr(scratch2, MemOperand(scratch2, CommonFrameConstants::kCallerFPOffset));
-  B(&load_context);
-  bind(&has_context);
-
-  // In debug mode, make sure the lexical context is set.
-#ifdef DEBUG
-  Cmp(scratch1, 0);
-  Check(ne, kWeShouldNotHaveAnEmptyLexicalContext);
-#endif
-
-  // Load the native context of the current context.
-  Ldr(scratch1, ContextMemOperand(scratch1, Context::NATIVE_CONTEXT_INDEX));
-
-  // Check the context is a native context.
-  if (emit_debug_code()) {
-    // Read the first word and compare to the native_context_map.
-    Ldr(scratch2, FieldMemOperand(scratch1, HeapObject::kMapOffset));
-    CompareRoot(scratch2, Heap::kNativeContextMapRootIndex);
-    Check(eq, kExpectedNativeContext);
-  }
-
-  // Check if both contexts are the same.
-  Ldr(scratch2, FieldMemOperand(holder_reg,
-                                JSGlobalProxy::kNativeContextOffset));
-  Cmp(scratch1, scratch2);
-  B(&same_contexts, eq);
-
-  // Check the context is a native context.
-  if (emit_debug_code()) {
-    // We're short on scratch registers here, so use holder_reg as a scratch.
-    Push(holder_reg);
-    Register scratch3 = holder_reg;
-
-    CompareRoot(scratch2, Heap::kNullValueRootIndex);
-    Check(ne, kExpectedNonNullContext);
-
-    Ldr(scratch3, FieldMemOperand(scratch2, HeapObject::kMapOffset));
-    CompareRoot(scratch3, Heap::kNativeContextMapRootIndex);
-    Check(eq, kExpectedNativeContext);
-    Pop(holder_reg);
-  }
-
-  // Check that the security token in the calling global object is
-  // compatible with the security token in the receiving global
-  // object.
-  int token_offset = Context::kHeaderSize +
-                     Context::SECURITY_TOKEN_INDEX * kPointerSize;
-
-  Ldr(scratch1, FieldMemOperand(scratch1, token_offset));
-  Ldr(scratch2, FieldMemOperand(scratch2, token_offset));
-  Cmp(scratch1, scratch2);
-  B(miss, ne);
-
-  Bind(&same_contexts);
 }
 
 

@@ -87,8 +87,16 @@ class RegisterPairs : public Pairs {
 class Float32RegisterPairs : public Pairs {
  public:
   Float32RegisterPairs()
-      : Pairs(100, GetRegConfig()->num_allocatable_aliased_double_registers(),
-              GetRegConfig()->allocatable_double_codes()) {}
+      : Pairs(
+            100,
+#if V8_TARGET_ARCH_ARM
+            // TODO(bbudge) Modify wasm linkage to allow use of all float regs.
+            GetRegConfig()->num_allocatable_double_registers() / 2 - 2,
+#else
+            GetRegConfig()->num_allocatable_double_registers(),
+#endif
+            GetRegConfig()->allocatable_double_codes()) {
+  }
 };
 
 
@@ -127,6 +135,10 @@ struct Allocator {
       // Allocate a floating point register/stack location.
       if (fp_offset < fp_count) {
         int code = fp_regs[fp_offset++];
+#if V8_TARGET_ARCH_ARM
+        // TODO(bbudge) Modify wasm linkage to allow use of all float regs.
+        if (type.representation() == MachineRepresentation::kFloat32) code *= 2;
+#endif
         return LinkageLocation::ForRegister(code, type);
       } else {
         int offset = -1 - stack_offset;
@@ -281,7 +293,9 @@ Handle<Code> WrapWithCFunction(Handle<Code> inner, CallDescriptor* desc) {
     // Build the call and return nodes.
     Node* call =
         b.graph()->NewNode(b.common()->Call(desc), param_count + 3, args);
-    Node* ret = b.graph()->NewNode(b.common()->Return(), call, call, start);
+    Node* zero = b.graph()->NewNode(b.common()->Int32Constant(0));
+    Node* ret =
+        b.graph()->NewNode(b.common()->Return(), zero, call, call, start);
     b.graph()->SetEnd(ret);
   }
 
@@ -519,7 +533,9 @@ static void TestInt32Sub(CallDescriptor* desc) {
     Node* p0 = b.graph()->NewNode(b.common()->Parameter(0), start);
     Node* p1 = b.graph()->NewNode(b.common()->Parameter(1), start);
     Node* add = b.graph()->NewNode(b.machine()->Int32Sub(), p0, p1);
-    Node* ret = b.graph()->NewNode(b.common()->Return(), add, start, start);
+    Node* zero = b.graph()->NewNode(b.common()->Int32Constant(0));
+    Node* ret =
+        b.graph()->NewNode(b.common()->Return(), zero, add, start, start);
     b.graph()->SetEnd(ret);
   }
 

@@ -48,11 +48,9 @@ InspectedContext::InspectedContext(V8InspectorImpl* inspector,
   v8::Local<v8::Object> global = info.context->Global();
   v8::Local<v8::Object> console =
       V8Console::createConsole(this, info.hasMemoryOnConsole);
-  v8::PropertyDescriptor descriptor(console, /* writable */ true);
-  descriptor.set_enumerable(false);
-  descriptor.set_configurable(true);
-  v8::Local<v8::String> consoleKey = toV8StringInternalized(isolate, "console");
-  if (!global->DefineProperty(info.context, consoleKey, descriptor)
+  if (!global
+           ->Set(info.context, toV8StringInternalized(isolate, "console"),
+                 console)
            .FromMaybe(false))
     return;
   m_console.Reset(isolate, console);
@@ -75,9 +73,13 @@ v8::Isolate* InspectedContext::isolate() const {
   return m_inspector->isolate();
 }
 
-void InspectedContext::createInjectedScript() {
+bool InspectedContext::createInjectedScript() {
   DCHECK(!m_injectedScript);
-  m_injectedScript = InjectedScript::create(this);
+  std::unique_ptr<InjectedScript> injectedScript = InjectedScript::create(this);
+  // InjectedScript::create can destroy |this|.
+  if (!injectedScript) return false;
+  m_injectedScript = std::move(injectedScript);
+  return true;
 }
 
 void InspectedContext::discardInjectedScript() { m_injectedScript.reset(); }

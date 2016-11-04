@@ -439,8 +439,8 @@ StackFrame::Type StackFrame::ComputeType(const StackFrameIteratorBase* iterator,
     if (!marker->IsSmi()) {
       if (maybe_function->IsSmi()) {
         return NONE;
-      } else if (FLAG_ignition && IsInterpreterFramePc(iterator->isolate(),
-                                                       *(state->pc_address))) {
+      } else if (IsInterpreterFramePc(iterator->isolate(),
+                                      *(state->pc_address))) {
         return INTERPRETED;
       } else {
         return JAVA_SCRIPT;
@@ -1285,6 +1285,19 @@ DeoptimizationInputData* OptimizedFrame::GetDeoptimizationData(
   return nullptr;
 }
 
+Object* OptimizedFrame::receiver() const {
+  Code* code = LookupCode();
+  if (code->kind() == Code::BUILTIN) {
+    Address argc_ptr = fp() + OptimizedBuiltinFrameConstants::kArgCOffset;
+    intptr_t argc = *reinterpret_cast<intptr_t*>(argc_ptr);
+    intptr_t args_size =
+        (StandardFrameConstants::kFixedSlotCountAboveFp + argc) * kPointerSize;
+    Address receiver_ptr = fp() + args_size;
+    return *reinterpret_cast<Object**>(receiver_ptr);
+  } else {
+    return JavaScriptFrame::receiver();
+  }
+}
 
 void OptimizedFrame::GetFunctions(List<JSFunction*>* functions) const {
   DCHECK(functions->length() == 0);
@@ -1494,7 +1507,7 @@ Address WasmFrame::GetCallerStackPointer() const {
 
 Object* WasmFrame::wasm_instance() const {
   Object* ret = wasm::GetOwningWasmInstance(LookupCode());
-  if (ret == nullptr) ret = *(isolate()->factory()->undefined_value());
+  if (ret == nullptr) ret = isolate()->heap()->undefined_value();
   return ret;
 }
 

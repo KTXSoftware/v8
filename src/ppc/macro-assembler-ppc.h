@@ -662,12 +662,6 @@ class MacroAssembler : public Assembler {
   // ---------------------------------------------------------------------------
   // Inline caching support
 
-  // Generate code for checking access rights - used for security checks
-  // on access to global objects across environments. The holder register
-  // is left untouched, whereas both scratch registers are clobbered.
-  void CheckAccessGlobalProxy(Register holder_reg, Register scratch,
-                              Label* miss);
-
   void GetNumberHash(Register t0, Register scratch);
 
   inline void MarkCode(NopMarkerTypes type) { nop(type); }
@@ -763,11 +757,6 @@ class MacroAssembler : public Assembler {
   void AllocateJSValue(Register result, Register constructor, Register value,
                        Register scratch1, Register scratch2,
                        Label* gc_required);
-
-  // Copies a number of bytes from src to dst. All registers are clobbered. On
-  // exit src and dst will point to the place just after where the last byte was
-  // read or written and length will be zero.
-  void CopyBytes(Register src, Register dst, Register length, Register scratch);
 
   // Initialize fields with filler values.  |count| fields starting at
   // |current_address| are overwritten with the value in |filler|.  At the end

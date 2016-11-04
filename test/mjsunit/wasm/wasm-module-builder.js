@@ -120,7 +120,8 @@ class WasmGlobalBuilder {
   }
 
   exportAs(name) {
-    this.module.exports.push({name: name, kind: kExternalGlobal, index: this.index});
+    this.module.exports.push({name: name, kind: kExternalGlobal,
+                              index: this.index});
     return this;
   }
 }
@@ -197,13 +198,25 @@ class WasmModuleBuilder {
   }
 
   addImportedMemory(module, name, initial = 0, maximum) {
-    let o = {module: module, name: name, kind: kExternalMemory, initial: initial, maximum: maximum};
+    let o = {module: module, name: name, kind: kExternalMemory,
+             initial: initial, maximum: maximum};
     this.imports.push(o);
     return this;
   }
 
+  addImportedTable(module, name, initial, maximum) {
+    let o = {module: module, name: name, kind: kExternalTable, initial: initial,
+             maximum: maximum};
+    this.imports.push(o);
+  }
+
   addExport(name, index) {
     this.exports.push({name: name, kind: kExternalFunction, index: index});
+    return this;
+  }
+
+  addExportOfKind(name, kind, index) {
+    this.exports.push({name: name, kind: kind, index: index});
     return this;
   }
 
@@ -217,10 +230,13 @@ class WasmModuleBuilder {
   }
 
   addFunctionTableInit(base, is_global, array) {
-    this.function_table_inits.push({base: base, is_global: is_global, array: array});
+    this.function_table_inits.push({base: base, is_global: is_global,
+                                    array: array});
     if (!is_global) {
       var length = base + array.length;
-      if (length > this.function_table_length) this.function_table_length = length;
+      if (length > this.function_table_length) {
+        this.function_table_length = length;
+      }
     }
     return this;
   }
@@ -275,6 +291,12 @@ class WasmModuleBuilder {
             section.emit_u32v(imp.type);
             section.emit_u8(imp.mutable);
           } else if (imp.kind == kExternalMemory) {
+            var has_max = (typeof imp.maximum) != "undefined";
+            section.emit_u8(has_max ? 1 : 0); // flags
+            section.emit_u32v(imp.initial); // initial
+            if (has_max) section.emit_u32v(imp.maximum); // maximum
+          } else if (imp.kind == kExternalTable) {
+            section.emit_u8(kWasmAnyFunctionTypeForm);
             var has_max = (typeof imp.maximum) != "undefined";
             section.emit_u8(has_max ? 1 : 0); // flags
             section.emit_u32v(imp.initial); // initial

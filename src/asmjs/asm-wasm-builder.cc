@@ -1394,6 +1394,7 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
         current_function_builder_->AddAsmWasmOffset(expr->position());
         current_function_builder_->Emit(kExprCallIndirect);
         current_function_builder_->EmitVarInt(indices->signature_index);
+        current_function_builder_->EmitVarInt(0);  // table index
         returns_value =
             builder_->GetSignature(indices->signature_index)->return_count() >
             0;
@@ -1721,9 +1722,8 @@ class AsmWasmBuilderImpl final : public AstVisitor<AsmWasmBuilderImpl> {
 
   void VisitThisFunction(ThisFunction* expr) { UNREACHABLE(); }
 
-  void VisitDeclarations(ZoneList<Declaration*>* decls) {
-    for (int i = 0; i < decls->length(); ++i) {
-      Declaration* decl = decls->at(i);
+  void VisitDeclarations(Declaration::List* decls) {
+    for (Declaration* decl : *decls) {
       RECURSE(Visit(decl));
     }
   }

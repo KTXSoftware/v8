@@ -31,14 +31,25 @@ class Mips64OperandGenerator final : public OperandGenerator {
     return UseRegister(node);
   }
 
-  bool CanBeImmediate(Node* node, InstructionCode opcode) {
-    int64_t value;
-    if (node->opcode() == IrOpcode::kInt32Constant)
-      value = OpParameter<int32_t>(node);
-    else if (node->opcode() == IrOpcode::kInt64Constant)
-      value = OpParameter<int64_t>(node);
-    else
-      return false;
+  bool IsIntegerConstant(Node* node) {
+    return (node->opcode() == IrOpcode::kInt32Constant) ||
+           (node->opcode() == IrOpcode::kInt64Constant);
+  }
+
+  int64_t GetIntegerConstantValue(Node* node) {
+    if (node->opcode() == IrOpcode::kInt32Constant) {
+      return OpParameter<int32_t>(node);
+    }
+    DCHECK(node->opcode() == IrOpcode::kInt64Constant);
+    return OpParameter<int64_t>(node);
+  }
+
+  bool CanBeImmediate(Node* node, InstructionCode mode) {
+    return IsIntegerConstant(node) &&
+           CanBeImmediate(GetIntegerConstantValue(node), mode);
+  }
+
+  bool CanBeImmediate(int64_t value, InstructionCode opcode) {
     switch (ArchOpcodeField::decode(opcode)) {
       case kMips64Shl:
       case kMips64Sar:
@@ -48,6 +59,12 @@ class Mips64OperandGenerator final : public OperandGenerator {
       case kMips64Dsar:
       case kMips64Dshr:
         return is_uint6(value);
+      case kMips64Add:
+      case kMips64And32:
+      case kMips64And:
+      case kMips64Dadd:
+      case kMips64Or32:
+      case kMips64Or:
       case kMips64Xor:
         return is_uint16(value);
       case kMips64Ldc1:
@@ -91,9 +108,94 @@ static void VisitRRO(InstructionSelector* selector, ArchOpcode opcode,
                  g.UseOperand(node->InputAt(1), opcode));
 }
 
+struct ExtendingLoadMatcher {
+  ExtendingLoadMatcher(Node* node, InstructionSelector* selector)
+      : matches_(false), selector_(selector), base_(nullptr), immediate_(0) {
+    Initialize(node);
+  }
+
+  bool Matches() const { return matches_; }
+
+  Node* base() const {
+    DCHECK(Matches());
+    return base_;
+  }
+  int64_t immediate() const {
+    DCHECK(Matches());
+    return immediate_;
+  }
+  ArchOpcode opcode() const {
+    DCHECK(Matches());
+    return opcode_;
+  }
+
+ private:
+  bool matches_;
+  InstructionSelector* selector_;
+  Node* base_;
+  int64_t immediate_;
+  ArchOpcode opcode_;
+
+  void Initialize(Node* node) {
+    Int64BinopMatcher m(node);
+    // When loading a 64-bit value and shifting by 32, we should
+    // just load and sign-extend the interesting 4 bytes instead.
+    // This happens, for example, when we're loading and untagging SMIs.
+    DCHECK(m.IsWord64Sar());
+    if (m.left().IsLoad() && m.right().Is(32) &&
+        selector_->CanCover(m.node(), m.left().node())) {
+      Mips64OperandGenerator g(selector_);
+      Node* load = m.left().node();
+      Node* offset = load->InputAt(1);
+      base_ = load->InputAt(0);
+      opcode_ = kMips64Lw;
+      if (g.CanBeImmediate(offset, opcode_)) {
+#if defined(V8_TARGET_LITTLE_ENDIAN)
+        immediate_ = g.GetIntegerConstantValue(offset) + 4;
+#elif defined(V8_TARGET_BIG_ENDIAN)
+        immediate_ = g.GetIntegerConstantValue(offset);
+#endif
+        matches_ = g.CanBeImmediate(immediate_, kMips64Lw);
+      }
+    }
+  }
+};
+
+bool TryEmitExtendingLoad(InstructionSelector* selector, Node* node) {
+  ExtendingLoadMatcher m(node, selector);
+  Mips64OperandGenerator g(selector);
+  if (m.Matches()) {
+    InstructionOperand inputs[2];
+    inputs[0] = g.UseRegister(m.base());
+    InstructionCode opcode =
+        m.opcode() | AddressingModeField::encode(kMode_MRI);
+    DCHECK(is_int32(m.immediate()));
+    inputs[1] = g.TempImmediate(static_cast<int32_t>(m.immediate()));
+    InstructionOperand outputs[] = {g.DefineAsRegister(node)};
+    selector->Emit(opcode, arraysize(outputs), outputs, arraysize(inputs),
+                   inputs);
+    return true;
+  }
+  return false;
+}
+
+bool TryMatchImmediate(InstructionSelector* selector,
+                       InstructionCode* opcode_return, Node* node,
+                       size_t* input_count_return, InstructionOperand* inputs) {
+  Mips64OperandGenerator g(selector);
+  if (g.CanBeImmediate(node, *opcode_return)) {
+    *opcode_return |= AddressingModeField::encode(kMode_MRI);
+    inputs[0] = g.UseImmediate(node);
+    *input_count_return = 1;
+    return true;
+  }
+  return false;
+}
 
 static void VisitBinop(InstructionSelector* selector, Node* node,
-                       InstructionCode opcode, FlagsContinuation* cont) {
+                       InstructionCode opcode, bool has_reverse_opcode,
+                       InstructionCode reverse_opcode,
+                       FlagsContinuation* cont) {
   Mips64OperandGenerator g(selector);
   Int32BinopMatcher m(node);
   InstructionOperand inputs[4];
@@ -101,8 +203,21 @@ static void VisitBinop(InstructionSelector* selector, Node* node,
   InstructionOperand outputs[2];
   size_t output_count = 0;
 
-  inputs[input_count++] = g.UseRegister(m.left().node());
-  inputs[input_count++] = g.UseOperand(m.right().node(), opcode);
+  if (TryMatchImmediate(selector, &opcode, m.right().node(), &input_count,
+                        &inputs[1])) {
+    inputs[0] = g.UseRegister(m.left().node());
+    input_count++;
+  }
+  if (has_reverse_opcode &&
+      TryMatchImmediate(selector, &reverse_opcode, m.left().node(),
+                        &input_count, &inputs[1])) {
+    inputs[0] = g.UseRegister(m.right().node());
+    opcode = reverse_opcode;
+    input_count++;
+  } else {
+    inputs[input_count++] = g.UseRegister(m.left().node());
+    inputs[input_count++] = g.UseOperand(m.right().node(), opcode);
+  }
 
   if (cont->IsBranch()) {
     inputs[input_count++] = g.Label(cont->true_block());
@@ -135,11 +250,21 @@ static void VisitBinop(InstructionSelector* selector, Node* node,
   }
 }
 
+static void VisitBinop(InstructionSelector* selector, Node* node,
+                       InstructionCode opcode, bool has_reverse_opcode,
+                       InstructionCode reverse_opcode) {
+  FlagsContinuation cont;
+  VisitBinop(selector, node, opcode, has_reverse_opcode, reverse_opcode, &cont);
+}
+
+static void VisitBinop(InstructionSelector* selector, Node* node,
+                       InstructionCode opcode, FlagsContinuation* cont) {
+  VisitBinop(selector, node, opcode, false, kArchNop, cont);
+}
 
 static void VisitBinop(InstructionSelector* selector, Node* node,
                        InstructionCode opcode) {
-  FlagsContinuation cont;
-  VisitBinop(selector, node, opcode, &cont);
+  VisitBinop(selector, node, opcode, false, kArchNop);
 }
 
 void EmitLoad(InstructionSelector* selector, Node* node, InstructionCode opcode,
@@ -334,7 +459,7 @@ void InstructionSelector::VisitWord32And(Node* node) {
       return;
     }
   }
-  VisitBinop(this, node, kMips64And32);
+  VisitBinop(this, node, kMips64And32, true, kMips64And32);
 }
 
 
@@ -385,17 +510,17 @@ void InstructionSelector::VisitWord64And(Node* node) {
       return;
     }
   }
-  VisitBinop(this, node, kMips64And);
+  VisitBinop(this, node, kMips64And, true, kMips64And);
 }
 
 
 void InstructionSelector::VisitWord32Or(Node* node) {
-  VisitBinop(this, node, kMips64Or32);
+  VisitBinop(this, node, kMips64Or32, true, kMips64Or32);
 }
 
 
 void InstructionSelector::VisitWord64Or(Node* node) {
-  VisitBinop(this, node, kMips64Or);
+  VisitBinop(this, node, kMips64Or, true, kMips64Or);
 }
 
 
@@ -419,7 +544,7 @@ void InstructionSelector::VisitWord32Xor(Node* node) {
          g.TempImmediate(0));
     return;
   }
-  VisitBinop(this, node, kMips64Xor32);
+  VisitBinop(this, node, kMips64Xor32, true, kMips64Xor32);
 }
 
 
@@ -443,7 +568,7 @@ void InstructionSelector::VisitWord64Xor(Node* node) {
          g.TempImmediate(0));
     return;
   }
-  VisitBinop(this, node, kMips64Xor);
+  VisitBinop(this, node, kMips64Xor, true, kMips64Xor);
 }
 
 
@@ -597,6 +722,7 @@ void InstructionSelector::VisitWord64Shr(Node* node) {
 
 
 void InstructionSelector::VisitWord64Sar(Node* node) {
+  if (TryEmitExtendingLoad(this, node)) return;
   VisitRRO(this, kMips64Dsar, node);
 }
 
@@ -692,7 +818,7 @@ void InstructionSelector::VisitInt32Add(Node* node) {
       return;
     }
   }
-  VisitBinop(this, node, kMips64Add);
+  VisitBinop(this, node, kMips64Add, true, kMips64Add);
 }
 
 
@@ -726,7 +852,7 @@ void InstructionSelector::VisitInt64Add(Node* node) {
     }
   }
 
-  VisitBinop(this, node, kMips64Dadd);
+  VisitBinop(this, node, kMips64Dadd, true, kMips64Dadd);
 }
 
 
@@ -1128,6 +1254,33 @@ void InstructionSelector::VisitChangeInt32ToInt64(Node* node) {
 
 void InstructionSelector::VisitChangeUint32ToUint64(Node* node) {
   Mips64OperandGenerator g(this);
+  Node* value = node->InputAt(0);
+  switch (value->opcode()) {
+    // 32-bit operations will write their result in a 64 bit register,
+    // clearing the top 32 bits of the destination register.
+    case IrOpcode::kUint32Div:
+    case IrOpcode::kUint32Mod:
+    case IrOpcode::kUint32MulHigh: {
+      Emit(kArchNop, g.DefineSameAsFirst(node), g.Use(value));
+      return;
+    }
+    case IrOpcode::kLoad: {
+      LoadRepresentation load_rep = LoadRepresentationOf(value->op());
+      if (load_rep.IsUnsigned()) {
+        switch (load_rep.representation()) {
+          case MachineRepresentation::kWord8:
+          case MachineRepresentation::kWord16:
+          case MachineRepresentation::kWord32:
+            Emit(kArchNop, g.DefineSameAsFirst(node), g.Use(value));
+            return;
+          default:
+            break;
+        }
+      }
+    }
+    default:
+      break;
+  }
   Emit(kMips64Dext, g.DefineAsRegister(node), g.UseRegister(node->InputAt(0)),
        g.TempImmediate(0), g.TempImmediate(32));
 }
@@ -1955,21 +2108,30 @@ void EmitWordCompareZero(InstructionSelector* selector, Node* value,
 // Shared routine for word comparisons against zero.
 void VisitWordCompareZero(InstructionSelector* selector, Node* user,
                           Node* value, FlagsContinuation* cont) {
+  // Try to combine with comparisons against 0 by simply inverting the branch.
   while (selector->CanCover(user, value)) {
+    if (value->opcode() == IrOpcode::kWord32Equal) {
+      Int32BinopMatcher m(value);
+      if (!m.right().Is(0)) break;
+      user = value;
+      value = m.left().node();
+    } else if (value->opcode() == IrOpcode::kWord64Equal) {
+      Int64BinopMatcher m(value);
+      if (!m.right().Is(0)) break;
+      user = value;
+      value = m.left().node();
+    } else {
+      break;
+    }
+
+    cont->Negate();
+  }
+
+  if (selector->CanCover(user, value)) {
     switch (value->opcode()) {
-      case IrOpcode::kWord32Equal: {
-        // Combine with comparisons against 0 by simply inverting the
-        // continuation.
-        Int32BinopMatcher m(value);
-        if (m.right().Is(0)) {
-          user = value;
-          value = m.left().node();
-          cont->Negate();
-          continue;
-        }
+      case IrOpcode::kWord32Equal:
         cont->OverwriteAndNegateIfEqual(kEqual);
         return VisitWord32Compare(selector, value, cont);
-      }
       case IrOpcode::kInt32LessThan:
         cont->OverwriteAndNegateIfEqual(kSignedLessThan);
         return VisitWord32Compare(selector, value, cont);
@@ -1982,19 +2144,9 @@ void VisitWordCompareZero(InstructionSelector* selector, Node* user,
       case IrOpcode::kUint32LessThanOrEqual:
         cont->OverwriteAndNegateIfEqual(kUnsignedLessThanOrEqual);
         return VisitWord32Compare(selector, value, cont);
-      case IrOpcode::kWord64Equal: {
-        // Combine with comparisons against 0 by simply inverting the
-        // continuation.
-        Int64BinopMatcher m(value);
-        if (m.right().Is(0)) {
-          user = value;
-          value = m.left().node();
-          cont->Negate();
-          continue;
-        }
+      case IrOpcode::kWord64Equal:
         cont->OverwriteAndNegateIfEqual(kEqual);
         return VisitWord64Compare(selector, value, cont);
-      }
       case IrOpcode::kInt64LessThan:
         cont->OverwriteAndNegateIfEqual(kSignedLessThan);
         return VisitWord64Compare(selector, value, cont);
@@ -2065,7 +2217,6 @@ void VisitWordCompareZero(InstructionSelector* selector, Node* user,
       default:
         break;
     }
-    break;
   }
 
   // Continuation could not be combined with a compare, emit compare against 0.

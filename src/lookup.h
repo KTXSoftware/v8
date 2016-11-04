@@ -238,6 +238,7 @@ class V8_EXPORT_PRIVATE LookupIterator final BASE_EMBEDDED {
   }
   FieldIndex GetFieldIndex() const;
   Handle<FieldType> GetFieldType() const;
+  int GetFieldDescriptorIndex() const;
   int GetAccessorIndex() const;
   int GetConstantIndex() const;
   Handle<PropertyCell> GetPropertyCell() const;
@@ -261,6 +262,11 @@ class V8_EXPORT_PRIVATE LookupIterator final BASE_EMBEDDED {
       InternalUpdateProtector();
     }
   }
+
+  // Lookup a 'cached' private property for an accessor.
+  // If not found returns false and leaves the LookupIterator unmodified.
+  bool TryLookupCachedProperty();
+  bool LookupCachedProperty();
 
  private:
   void InternalUpdateProtector();

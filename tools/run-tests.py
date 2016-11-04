@@ -67,8 +67,9 @@ TEST_MAP = {
   "bot_default": [
     "mjsunit",
     "cctest",
-    "webkit",
+    "debugger",
     "inspector",
+    "webkit",
     "fuzzer",
     "message",
     "preparser",
@@ -79,6 +80,8 @@ TEST_MAP = {
   "default": [
     "mjsunit",
     "cctest",
+    "debugger",
+    "inspector",
     "fuzzer",
     "message",
     "preparser",
@@ -89,8 +92,9 @@ TEST_MAP = {
   "optimize_for_size": [
     "mjsunit",
     "cctest",
-    "webkit",
+    "debugger",
     "inspector",
+    "webkit",
     "intl",
   ],
   "unittests": [
@@ -608,8 +612,12 @@ def ProcessOptions(options):
     TEST_MAP["bot_default"].remove("intl")
     TEST_MAP["default"].remove("intl")
   if not options.enable_inspector:
+    TEST_MAP["default"].remove("inspector")
     TEST_MAP["bot_default"].remove("inspector")
     TEST_MAP["optimize_for_size"].remove("inspector")
+    TEST_MAP["default"].remove("debugger")
+    TEST_MAP["bot_default"].remove("debugger")
+    TEST_MAP["optimize_for_size"].remove("debugger")
   return True
 
 
@@ -751,14 +759,8 @@ def Execute(arch, mode, args, options, suites):
     # Predictable mode is slower.
     options.timeout *= 2
 
-  # TODO(machenbach): Remove temporary verbose output on windows after
-  # debugging driver-hung-up on XP.
-  verbose_output = (
-      options.verbose or
-      utils.IsWindows() and options.progress == "verbose"
-  )
   ctx = context.Context(arch, MODES[mode]["execution_mode"], shell_dir,
-                        mode_flags, verbose_output,
+                        mode_flags, options.verbose,
                         options.timeout,
                         options.isolates,
                         options.command_prefix,
@@ -869,7 +871,7 @@ def Execute(arch, mode, args, options, suites):
 
   run_networked = not options.no_network
   if not run_networked:
-    if verbose_output:
+    if options.verbose:
       print("Network distribution disabled, running tests locally.")
   elif utils.GuessOS() != "linux":
     print("Network distribution is only supported on Linux, sorry!")

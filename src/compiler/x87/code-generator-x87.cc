@@ -637,8 +637,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       frame_access_state()->ClearSPDelta();
       break;
     }
-    case kArchTailCallJSFunctionFromJSFunction:
-    case kArchTailCallJSFunction: {
+    case kArchTailCallJSFunctionFromJSFunction: {
       Register func = i.InputRegister(0);
       if (FLAG_debug_code) {
         // Check the function's context matches the context argument.
@@ -649,10 +648,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ VerifyX87StackDepth(1);
       }
       __ fstp(0);
-      if (arch_opcode == kArchTailCallJSFunctionFromJSFunction) {
-        AssemblePopArgumentsAdaptorFrame(kJavaScriptCallArgCountRegister,
-                                         no_reg, no_reg, no_reg);
-      }
+      AssemblePopArgumentsAdaptorFrame(kJavaScriptCallArgCountRegister, no_reg,
+                                       no_reg, no_reg);
       __ jmp(FieldOperand(func, JSFunction::kCodeEntryOffset));
       frame_access_state()->ClearSPDelta();
       frame_access_state()->SetFrameAccessToDefault();
@@ -749,7 +746,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kArchRet:
-      AssembleReturn();
+      AssembleReturn(instr->InputAt(0));
       break;
     case kArchFramePointer:
       __ mov(i.OutputRegister(), ebp);
@@ -2447,8 +2444,7 @@ void CodeGenerator::AssembleConstructFrame() {
   }
 }
 
-
-void CodeGenerator::AssembleReturn() {
+void CodeGenerator::AssembleReturn(InstructionOperand* pop) {
   CallDescriptor* descriptor = linkage()->GetIncomingDescriptor();
 
   // Clear the FPU stack only if there is no return value in the stack.
@@ -2466,7 +2462,6 @@ void CodeGenerator::AssembleReturn() {
   }
   if (clear_stack) __ fstp(0);
 
-  int pop_count = static_cast<int>(descriptor->StackParameterCount());
   const RegList saves = descriptor->CalleeSavedRegisters();
   // Restore registers.
   if (saves != 0) {
@@ -2476,22 +2471,40 @@ void CodeGenerator::AssembleReturn() {
     }
   }
 
+  // Might need ecx for scratch if pop_size is too big or if there is a variable
+  // pop count.
+  DCHECK_EQ(0u, descriptor->CalleeSavedRegisters() & ecx.bit());
+  size_t pop_size = descriptor->StackParameterCount() * kPointerSize;
+  X87OperandConverter g(this, nullptr);
   if (descriptor->IsCFunctionCall()) {
     AssembleDeconstructFrame();
   } else if (frame_access_state()->has_frame()) {
-    // Canonicalize JSFunction return sites for now.
-    if (return_label_.is_bound()) {
-      __ jmp(&return_label_);
-      return;
+    // Canonicalize JSFunction return sites for now if they always have the same
+    // number of return args.
+    if (pop->IsImmediate() && g.ToConstant(pop).ToInt32() == 0) {
+      if (return_label_.is_bound()) {
+        __ jmp(&return_label_);
+        return;
+      } else {
+        __ bind(&return_label_);
+        AssembleDeconstructFrame();
+      }
     } else {
-      __ bind(&return_label_);
       AssembleDeconstructFrame();
     }
   }
-  if (pop_count == 0) {
-    __ ret(0);
+  DCHECK_EQ(0u, descriptor->CalleeSavedRegisters() & edx.bit());
+  DCHECK_EQ(0u, descriptor->CalleeSavedRegisters() & ecx.bit());
+  if (pop->IsImmediate()) {
+    DCHECK_EQ(Constant::kInt32, g.ToConstant(pop).type());
+    pop_size += g.ToConstant(pop).ToInt32() * kPointerSize;
+    __ Ret(static_cast<int>(pop_size), ecx);
   } else {
-    __ Ret(pop_count * kPointerSize, ebx);
+    Register pop_reg = g.ToRegister(pop);
+    Register scratch_reg = pop_reg.is(ecx) ? edx : ecx;
+    __ pop(scratch_reg);
+    __ lea(esp, Operand(esp, pop_reg, times_4, static_cast<int>(pop_size)));
+    __ jmp(scratch_reg);
   }
 }
 

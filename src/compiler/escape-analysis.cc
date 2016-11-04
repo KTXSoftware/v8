@@ -1339,9 +1339,19 @@ bool EscapeAnalysis::CompareVirtualObjects(Node* left, Node* right) {
 
 namespace {
 
+bool IsOffsetForFieldAccessCorrect(const FieldAccess& access) {
+#if V8_TARGET_LITTLE_ENDIAN
+  return (access.offset % kPointerSize) == 0;
+#else
+  return ((access.offset +
+           (1 << ElementSizeLog2Of(access.machine_type.representation()))) %
+          kPointerSize) == 0;
+#endif
+}
+
 int OffsetForFieldAccess(Node* node) {
   FieldAccess access = FieldAccessOf(node->op());
-  DCHECK_EQ(access.offset % kPointerSize, 0);
+  DCHECK(IsOffsetForFieldAccessCorrect(access));
   return access.offset / kPointerSize;
 }
 
@@ -1399,7 +1409,20 @@ void EscapeAnalysis::ProcessLoadField(Node* node) {
   if (VirtualObject* object = GetVirtualObject(state, from)) {
     if (!object->IsTracked()) return;
     int offset = OffsetForFieldAccess(node);
-    if (static_cast<size_t>(offset) >= object->field_count()) return;
+    if (static_cast<size_t>(offset) >= object->field_count()) {
+      // We have a load from a field that is not inside the {object}. This
+      // can only happen with conflicting type feedback and for dead {node}s.
+      // For now, we just mark the {object} as escaping.
+      // TODO(turbofan): Consider introducing an Undefined or None operator
+      // that we can replace this load with, since we know it's dead code.
+      if (status_analysis_->SetEscaped(from)) {
+        TRACE(
+            "Setting #%d (%s) to escaped because load field #%d from "
+            "offset %d outside of object\n",
+            from->id(), from->op()->mnemonic(), node->id(), offset);
+      }
+      return;
+    }
     Node* value = object->GetField(offset);
     if (value) {
       value = ResolveReplacement(value);
@@ -1407,7 +1430,7 @@ void EscapeAnalysis::ProcessLoadField(Node* node) {
     // Record that the load has this alias.
     UpdateReplacement(state, node, value);
   } else if (from->opcode() == IrOpcode::kPhi &&
-             FieldAccessOf(node->op()).offset % kPointerSize == 0) {
+             IsOffsetForFieldAccessCorrect(FieldAccessOf(node->op()))) {
     int offset = OffsetForFieldAccess(node);
     // Only binary phis are supported for now.
     ProcessLoadFromPhi(offset, from, node, state);
@@ -1464,7 +1487,20 @@ void EscapeAnalysis::ProcessStoreField(Node* node) {
   if (VirtualObject* object = GetVirtualObject(state, to)) {
     if (!object->IsTracked()) return;
     int offset = OffsetForFieldAccess(node);
-    if (static_cast<size_t>(offset) >= object->field_count()) return;
+    if (static_cast<size_t>(offset) >= object->field_count()) {
+      // We have a store to a field that is not inside the {object}. This
+      // can only happen with conflicting type feedback and for dead {node}s.
+      // For now, we just mark the {object} as escaping.
+      // TODO(turbofan): Consider just eliminating the store in the reducer
+      // pass, as it's dead code anyways.
+      if (status_analysis_->SetEscaped(to)) {
+        TRACE(
+            "Setting #%d (%s) to escaped because store field #%d to "
+            "offset %d outside of object\n",
+            to->id(), to->op()->mnemonic(), node->id(), offset);
+      }
+      return;
+    }
     Node* val = ResolveReplacement(NodeProperties::GetValueInput(node, 1));
     // TODO(mstarzinger): The following is a workaround to not track some well
     // known raw fields. We only ever store default initial values into these

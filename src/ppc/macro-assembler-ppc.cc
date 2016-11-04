@@ -1605,90 +1605,6 @@ void MacroAssembler::PopStackHandler() {
 }
 
 
-void MacroAssembler::CheckAccessGlobalProxy(Register holder_reg,
-                                            Register scratch, Label* miss) {
-  Label same_contexts;
-
-  DCHECK(!holder_reg.is(scratch));
-  DCHECK(!holder_reg.is(ip));
-  DCHECK(!scratch.is(ip));
-
-  // Load current lexical context from the active StandardFrame, which
-  // may require crawling past STUB frames.
-  Label load_context;
-  Label has_context;
-  DCHECK(!ip.is(scratch));
-  mr(ip, fp);
-  bind(&load_context);
-  LoadP(scratch,
-        MemOperand(ip, CommonFrameConstants::kContextOrFrameTypeOffset));
-  JumpIfNotSmi(scratch, &has_context);
-  LoadP(ip, MemOperand(ip, CommonFrameConstants::kCallerFPOffset));
-  b(&load_context);
-  bind(&has_context);
-
-// In debug mode, make sure the lexical context is set.
-#ifdef DEBUG
-  cmpi(scratch, Operand::Zero());
-  Check(ne, kWeShouldNotHaveAnEmptyLexicalContext);
-#endif
-
-  // Load the native context of the current context.
-  LoadP(scratch, ContextMemOperand(scratch, Context::NATIVE_CONTEXT_INDEX));
-
-  // Check the context is a native context.
-  if (emit_debug_code()) {
-    // Cannot use ip as a temporary in this verification code. Due to the fact
-    // that ip is clobbered as part of cmp with an object Operand.
-    push(holder_reg);  // Temporarily save holder on the stack.
-    // Read the first word and compare to the native_context_map.
-    LoadP(holder_reg, FieldMemOperand(scratch, HeapObject::kMapOffset));
-    LoadRoot(ip, Heap::kNativeContextMapRootIndex);
-    cmp(holder_reg, ip);
-    Check(eq, kJSGlobalObjectNativeContextShouldBeANativeContext);
-    pop(holder_reg);  // Restore holder.
-  }
-
-  // Check if both contexts are the same.
-  LoadP(ip, FieldMemOperand(holder_reg, JSGlobalProxy::kNativeContextOffset));
-  cmp(scratch, ip);
-  beq(&same_contexts);
-
-  // Check the context is a native context.
-  if (emit_debug_code()) {
-    // Cannot use ip as a temporary in this verification code. Due to the fact
-    // that ip is clobbered as part of cmp with an object Operand.
-    push(holder_reg);    // Temporarily save holder on the stack.
-    mr(holder_reg, ip);  // Move ip to its holding place.
-    LoadRoot(ip, Heap::kNullValueRootIndex);
-    cmp(holder_reg, ip);
-    Check(ne, kJSGlobalProxyContextShouldNotBeNull);
-
-    LoadP(holder_reg, FieldMemOperand(holder_reg, HeapObject::kMapOffset));
-    LoadRoot(ip, Heap::kNativeContextMapRootIndex);
-    cmp(holder_reg, ip);
-    Check(eq, kJSGlobalObjectNativeContextShouldBeANativeContext);
-    // Restore ip is not needed. ip is reloaded below.
-    pop(holder_reg);  // Restore holder.
-    // Restore ip to holder's context.
-    LoadP(ip, FieldMemOperand(holder_reg, JSGlobalProxy::kNativeContextOffset));
-  }
-
-  // Check that the security token in the calling global object is
-  // compatible with the security token in the receiving global
-  // object.
-  int token_offset =
-      Context::kHeaderSize + Context::SECURITY_TOKEN_INDEX * kPointerSize;
-
-  LoadP(scratch, FieldMemOperand(scratch, token_offset));
-  LoadP(ip, FieldMemOperand(ip, token_offset));
-  cmp(scratch, ip);
-  bne(miss);
-
-  bind(&same_contexts);
-}
-
-
 // Compute the hash code from the untagged key.  This must be kept in sync with
 // ComputeIntegerHash in utils.h and KeyedLoadGenericStub in
 // code-stub-hydrogen.cc
@@ -3176,73 +3092,6 @@ void MacroAssembler::AllocateJSValue(Register result, Register constructor,
   STATIC_ASSERT(JSValue::kSize == 4 * kPointerSize);
 }
 
-
-void MacroAssembler::CopyBytes(Register src, Register dst, Register length,
-                               Register scratch) {
-  Label align_loop, aligned, word_loop, byte_loop, byte_loop_1, done;
-
-  DCHECK(!scratch.is(r0));
-
-  cmpi(length, Operand::Zero());
-  beq(&done);
-
-  // Check src alignment and length to see whether word_loop is possible
-  andi(scratch, src, Operand(kPointerSize - 1));
-  beq(&aligned, cr0);
-  subfic(scratch, scratch, Operand(kPointerSize * 2));
-  cmp(length, scratch);
-  blt(&byte_loop);
-
-  // Align src before copying in word size chunks.
-  subi(scratch, scratch, Operand(kPointerSize));
-  mtctr(scratch);
-  bind(&align_loop);
-  lbz(scratch, MemOperand(src));
-  addi(src, src, Operand(1));
-  subi(length, length, Operand(1));
-  stb(scratch, MemOperand(dst));
-  addi(dst, dst, Operand(1));
-  bdnz(&align_loop);
-
-  bind(&aligned);
-
-  // Copy bytes in word size chunks.
-  if (emit_debug_code()) {
-    andi(r0, src, Operand(kPointerSize - 1));
-    Assert(eq, kExpectingAlignmentForCopyBytes, cr0);
-  }
-
-  ShiftRightImm(scratch, length, Operand(kPointerSizeLog2));
-  cmpi(scratch, Operand::Zero());
-  beq(&byte_loop);
-
-  mtctr(scratch);
-  bind(&word_loop);
-  LoadP(scratch, MemOperand(src));
-  addi(src, src, Operand(kPointerSize));
-  subi(length, length, Operand(kPointerSize));
-
-  StoreP(scratch, MemOperand(dst));
-  addi(dst, dst, Operand(kPointerSize));
-  bdnz(&word_loop);
-
-  // Copy the last bytes if any left.
-  cmpi(length, Operand::Zero());
-  beq(&done);
-
-  bind(&byte_loop);
-  mtctr(length);
-  bind(&byte_loop_1);
-  lbz(scratch, MemOperand(src));
-  addi(src, src, Operand(1));
-  stb(scratch, MemOperand(dst));
-  addi(dst, dst, Operand(1));
-  bdnz(&byte_loop_1);
-
-  bind(&done);
-}
-
-
 void MacroAssembler::InitializeNFieldsWithFiller(Register current_address,
                                                  Register count,
                                                  Register filler) {
@@ -4581,7 +4430,8 @@ void MacroAssembler::TestJSArrayForAllocationMemento(Register receiver_reg,
   ExternalReference new_space_allocation_top_adr =
       ExternalReference::new_space_allocation_top_address(isolate());
   const int kMementoMapOffset = JSArray::kSize - kHeapObjectTag;
-  const int kMementoEndOffset = kMementoMapOffset + AllocationMemento::kSize;
+  const int kMementoLastWordOffset =
+      kMementoMapOffset + AllocationMemento::kSize - kPointerSize;
   Register mask = scratch2_reg;
 
   DCHECK(!AreAliased(receiver_reg, scratch_reg, mask));
@@ -4591,7 +4441,7 @@ void MacroAssembler::TestJSArrayForAllocationMemento(Register receiver_reg,
 
   DCHECK((~Page::kPageAlignmentMask & 0xffff) == 0);
   lis(mask, Operand((~Page::kPageAlignmentMask >> 16)));
-  addi(scratch_reg, receiver_reg, Operand(kMementoEndOffset));
+  addi(scratch_reg, receiver_reg, Operand(kMementoLastWordOffset));
 
   // If the object is in new space, we need to check whether it is on the same
   // page as the current top.
@@ -4612,7 +4462,7 @@ void MacroAssembler::TestJSArrayForAllocationMemento(Register receiver_reg,
   // we are below top.
   bind(&top_check);
   cmp(scratch_reg, ip);
-  bgt(no_memento_found);
+  bge(no_memento_found);
   // Memento map check.
   bind(&map_check);
   LoadP(scratch_reg, MemOperand(receiver_reg, kMementoMapOffset));

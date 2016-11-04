@@ -509,20 +509,25 @@ class DoExpression final : public Expression {
 
 class Declaration : public AstNode {
  public:
+  typedef ThreadedList<Declaration> List;
+
   VariableProxy* proxy() const { return proxy_; }
   Scope* scope() const { return scope_; }
 
  protected:
   Declaration(VariableProxy* proxy, Scope* scope, int pos, NodeType type)
-      : AstNode(pos, type), proxy_(proxy), scope_(scope) {}
+      : AstNode(pos, type), proxy_(proxy), scope_(scope), next_(nullptr) {}
 
   static const uint8_t kNextBitFieldIndex = AstNode::kNextBitFieldIndex;
 
  private:
   VariableProxy* proxy_;
-
   // Nested scope from which the declaration originated.
   Scope* scope_;
+  // Declarations list threaded through the declarations.
+  Declaration** next() { return &next_; }
+  Declaration* next_;
+  friend List;
 };
 
 
@@ -1671,7 +1676,13 @@ class VariableProxy final : public Expression {
     bit_field_ = IsNewTargetField::update(bit_field_, true);
   }
 
-  int end_position() const { return end_position_; }
+  HoleCheckMode hole_check_mode() const {
+    return HoleCheckModeField::decode(bit_field_);
+  }
+  void set_needs_hole_check() {
+    bit_field_ =
+        HoleCheckModeField::update(bit_field_, HoleCheckMode::kRequired);
+  }
 
   // Bind this proxy to the variable var.
   void BindTo(Variable* var);
@@ -1693,9 +1704,9 @@ class VariableProxy final : public Expression {
  private:
   friend class AstNodeFactory;
 
-  VariableProxy(Variable* var, int start_position, int end_position);
+  VariableProxy(Variable* var, int start_position);
   VariableProxy(const AstRawString* name, VariableKind variable_kind,
-                int start_position, int end_position);
+                int start_position);
   explicit VariableProxy(const VariableProxy* copy_from);
 
   static int parent_num_ids() { return Expression::num_ids(); }
@@ -1706,11 +1717,9 @@ class VariableProxy final : public Expression {
   class IsAssignedField : public BitField<bool, IsThisField::kNext, 1> {};
   class IsResolvedField : public BitField<bool, IsAssignedField::kNext, 1> {};
   class IsNewTargetField : public BitField<bool, IsResolvedField::kNext, 1> {};
+  class HoleCheckModeField
+      : public BitField<HoleCheckMode, IsNewTargetField::kNext, 1> {};
 
-  // Position is stored in the AstNode superclass, but VariableProxy needs to
-  // know its end position too (for error messages). It cannot be inferred from
-  // the variable name length because it can contain escapes.
-  int end_position_;
   FeedbackVectorSlot variable_feedback_slot_;
   union {
     const AstRawString* raw_name_;  // if !is_resolved_
@@ -2954,10 +2963,8 @@ class AstVisitor BASE_EMBEDDED {
  public:
   void Visit(AstNode* node) { impl()->Visit(node); }
 
-  void VisitDeclarations(ZoneList<Declaration*>* declarations) {
-    for (int i = 0; i < declarations->length(); i++) {
-      Visit(declarations->at(i));
-    }
+  void VisitDeclarations(Declaration::List* declarations) {
+    for (Declaration* decl : *declarations) Visit(decl);
   }
 
   void VisitStatements(ZoneList<Statement*>* statements) {
@@ -3331,18 +3338,15 @@ class AstNodeFactory final BASE_EMBEDDED {
   }
 
   VariableProxy* NewVariableProxy(Variable* var,
-                                  int start_position = kNoSourcePosition,
-                                  int end_position = kNoSourcePosition) {
-    return new (zone_) VariableProxy(var, start_position, end_position);
+                                  int start_position = kNoSourcePosition) {
+    return new (zone_) VariableProxy(var, start_position);
   }
 
   VariableProxy* NewVariableProxy(const AstRawString* name,
                                   VariableKind variable_kind,
-                                  int start_position = kNoSourcePosition,
-                                  int end_position = kNoSourcePosition) {
+                                  int start_position = kNoSourcePosition) {
     DCHECK_NOT_NULL(name);
-    return new (zone_)
-        VariableProxy(name, variable_kind, start_position, end_position);
+    return new (zone_) VariableProxy(name, variable_kind, start_position);
   }
 
   // Recreates the VariableProxy in this Zone.

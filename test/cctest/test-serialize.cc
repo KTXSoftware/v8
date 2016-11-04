@@ -50,9 +50,10 @@
 
 using namespace v8::internal;
 
-void DisableTurbofan() {
-  const char* flag = "--turbo-filter=\"\"";
-  FlagList::SetFlagsFromString(flag, StrLength(flag));
+void DisableAlwaysOpt() {
+  // Isolates prepared for serialization do not optimize. The only exception is
+  // with the flag --always-opt.
+  FLAG_always_opt = false;
 }
 
 
@@ -150,10 +151,7 @@ static void SanityCheck(v8::Isolate* v8_isolate) {
 }
 
 UNINITIALIZED_TEST(StartupSerializerOnce) {
-  // The serialize-deserialize tests only work if the VM is built without
-  // serialization.  That doesn't matter.  We don't need to be able to
-  // serialize a snapshot in a VM that is booted from a snapshot.
-  DisableTurbofan();
+  DisableAlwaysOpt();
   v8::Isolate* isolate = TestIsolate::NewInitialized(true);
   Vector<const byte> blob = Serialize(isolate);
   isolate = Deserialize(blob);
@@ -171,7 +169,7 @@ UNINITIALIZED_TEST(StartupSerializerOnce) {
 }
 
 UNINITIALIZED_TEST(StartupSerializerTwice) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   v8::Isolate* isolate = TestIsolate::NewInitialized(true);
   Vector<const byte> blob1 = Serialize(isolate);
   Vector<const byte> blob2 = Serialize(isolate);
@@ -191,7 +189,7 @@ UNINITIALIZED_TEST(StartupSerializerTwice) {
 }
 
 UNINITIALIZED_TEST(StartupSerializerOnceRunScript) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   v8::Isolate* isolate = TestIsolate::NewInitialized(true);
   Vector<const byte> blob = Serialize(isolate);
   isolate = Deserialize(blob);
@@ -215,7 +213,7 @@ UNINITIALIZED_TEST(StartupSerializerOnceRunScript) {
 }
 
 UNINITIALIZED_TEST(StartupSerializerTwiceRunScript) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   v8::Isolate* isolate = TestIsolate::NewInitialized(true);
   Vector<const byte> blob1 = Serialize(isolate);
   Vector<const byte> blob2 = Serialize(isolate);
@@ -287,7 +285,7 @@ static void PartiallySerializeObject(Vector<const byte>* startup_blob_out,
         isolate, v8::SnapshotCreator::FunctionCodeHandling::kClear);
     startup_serializer.SerializeStrongReferences();
 
-    PartialSerializer partial_serializer(isolate, &startup_serializer);
+    PartialSerializer partial_serializer(isolate, &startup_serializer, nullptr);
     partial_serializer.Serialize(&raw_foo);
 
     startup_serializer.SerializeWeakReferencesAndDeferred();
@@ -303,7 +301,7 @@ static void PartiallySerializeObject(Vector<const byte>* startup_blob_out,
 }
 
 UNINITIALIZED_TEST(PartialSerializerObject) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   Vector<const byte> startup_blob;
   Vector<const byte> partial_blob;
   PartiallySerializeObject(&startup_blob, &partial_blob);
@@ -387,7 +385,7 @@ static void PartiallySerializeContext(Vector<const byte>* startup_blob_out,
     startup_serializer.SerializeStrongReferences();
 
     SnapshotByteSink partial_sink;
-    PartialSerializer partial_serializer(isolate, &startup_serializer);
+    PartialSerializer partial_serializer(isolate, &startup_serializer, nullptr);
     partial_serializer.Serialize(&raw_context);
     startup_serializer.SerializeWeakReferencesAndDeferred();
 
@@ -401,7 +399,7 @@ static void PartiallySerializeContext(Vector<const byte>* startup_blob_out,
 }
 
 UNINITIALIZED_TEST(PartialSerializerContext) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   Vector<const byte> startup_blob;
   Vector<const byte> partial_blob;
   PartiallySerializeContext(&startup_blob, &partial_blob);
@@ -416,7 +414,8 @@ UNINITIALIZED_TEST(PartialSerializerContext) {
     HandleScope handle_scope(isolate);
     Handle<Object> root;
     Handle<JSGlobalProxy> global_proxy =
-        isolate->factory()->NewUninitializedJSGlobalProxy();
+        isolate->factory()->NewUninitializedJSGlobalProxy(
+            JSGlobalProxy::SizeWithInternalFields(0));
     {
       SnapshotData snapshot_data(partial_blob);
       Deserializer deserializer(&snapshot_data);
@@ -506,7 +505,7 @@ static void PartiallySerializeCustomContext(
     startup_serializer.SerializeStrongReferences();
 
     SnapshotByteSink partial_sink;
-    PartialSerializer partial_serializer(isolate, &startup_serializer);
+    PartialSerializer partial_serializer(isolate, &startup_serializer, nullptr);
     partial_serializer.Serialize(&raw_context);
     startup_serializer.SerializeWeakReferencesAndDeferred();
 
@@ -520,7 +519,7 @@ static void PartiallySerializeCustomContext(
 }
 
 UNINITIALIZED_TEST(PartialSerializerCustomContext) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   Vector<const byte> startup_blob;
   Vector<const byte> partial_blob;
   PartiallySerializeCustomContext(&startup_blob, &partial_blob);
@@ -535,7 +534,8 @@ UNINITIALIZED_TEST(PartialSerializerCustomContext) {
     HandleScope handle_scope(isolate);
     Handle<Object> root;
     Handle<JSGlobalProxy> global_proxy =
-        isolate->factory()->NewUninitializedJSGlobalProxy();
+        isolate->factory()->NewUninitializedJSGlobalProxy(
+            JSGlobalProxy::SizeWithInternalFields(0));
     {
       SnapshotData snapshot_data(partial_blob);
       Deserializer deserializer(&snapshot_data);
@@ -609,16 +609,11 @@ UNINITIALIZED_TEST(PartialSerializerCustomContext) {
   v8_isolate->Dispose();
 }
 
-TEST(CustomSnapshotDataBlob) {
-  DisableTurbofan();
+TEST(CustomSnapshotDataBlob1) {
+  DisableAlwaysOpt();
   const char* source1 = "function f() { return 42; }";
-  const char* source2 =
-      "function f() { return g() * 2; }"
-      "function g() { return 43; }"
-      "/./.test('a')";
 
   v8::StartupData data1 = v8::V8::CreateSnapshotDataBlob(source1);
-  v8::StartupData data2 = v8::V8::CreateSnapshotDataBlob(source2);
 
   v8::Isolate::CreateParams params1;
   params1.snapshot_blob = &data1;
@@ -637,6 +632,16 @@ TEST(CustomSnapshotDataBlob) {
     CHECK(CompileRun("this.g")->IsUndefined());
   }
   isolate1->Dispose();
+}
+
+TEST(CustomSnapshotDataBlob2) {
+  DisableAlwaysOpt();
+  const char* source2 =
+      "function f() { return g() * 2; }"
+      "function g() { return 43; }"
+      "/./.test('a')";
+
+  v8::StartupData data2 = v8::V8::CreateSnapshotDataBlob(source2);
 
   v8::Isolate::CreateParams params2;
   params2.snapshot_blob = &data2;
@@ -657,15 +662,13 @@ TEST(CustomSnapshotDataBlob) {
   isolate2->Dispose();
 }
 
-
 static void SerializationFunctionTemplate(
     const v8::FunctionCallbackInfo<v8::Value>& args) {
   args.GetReturnValue().Set(args[0]);
 }
 
 TEST(CustomSnapshotDataBlobOutdatedContextWithOverflow) {
-  DisableTurbofan();
-
+  DisableAlwaysOpt();
   const char* source1 =
       "var o = {};"
       "(function() {"
@@ -710,7 +713,7 @@ TEST(CustomSnapshotDataBlobOutdatedContextWithOverflow) {
 }
 
 TEST(CustomSnapshotDataBlobWithLocker) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
   v8::Isolate* isolate0 = v8::Isolate::New(create_params);
@@ -748,7 +751,7 @@ TEST(CustomSnapshotDataBlobWithLocker) {
 }
 
 TEST(CustomSnapshotDataBlobStackOverflow) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   const char* source =
       "var a = [0];"
       "var b = a;"
@@ -794,7 +797,7 @@ bool IsCompiled(const char* name) {
 }
 
 TEST(SnapshotDataBlobWithWarmup) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   const char* warmup = "Math.abs(1); Math.random = 1;";
 
   v8::StartupData cold = v8::V8::CreateSnapshotDataBlob();
@@ -822,7 +825,7 @@ TEST(SnapshotDataBlobWithWarmup) {
 }
 
 TEST(CustomSnapshotDataBlobWithWarmup) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   const char* source =
       "function f() { return Math.abs(1); }\n"
       "function g() { return String.raw(1); }\n"
@@ -858,7 +861,7 @@ TEST(CustomSnapshotDataBlobWithWarmup) {
 }
 
 TEST(CustomSnapshotDataBlobImmortalImmovableRoots) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   // Flood the startup snapshot with shared function infos. If they are
   // serialized before the immortal immovable root, the root will no longer end
   // up on the first page.
@@ -1070,9 +1073,9 @@ TEST(CodeSerializerLargeCodeObject) {
   FLAG_always_opt = false;
 
   Vector<const uint8_t> source =
-      ConstructSource(STATIC_CHAR_VECTOR("var j=1; if (!j) {"),
+      ConstructSource(STATIC_CHAR_VECTOR("var j=1; if (j == 0) {"),
                       STATIC_CHAR_VECTOR("for (let i of Object.prototype);"),
-                      STATIC_CHAR_VECTOR("} j=7; j"), 2000);
+                      STATIC_CHAR_VECTOR("} j=7; j"), 1000);
   Handle<String> source_str =
       isolate->factory()->NewStringFromOneByte(source).ToHandleChecked();
 
@@ -1678,7 +1681,7 @@ TEST(CodeSerializerInternalReference) {
   // In ignition there are only relative jumps, so the following code
   // would not have any internal references. This test is not relevant
   // for ignition.
-  if (FLAG_ignition) {
+  if (FLAG_ignition || FLAG_turbo) {
     return;
   }
   // Disable experimental natives that are loaded after deserialization.
@@ -1762,7 +1765,7 @@ TEST(CodeSerializerInternalReference) {
 }
 
 TEST(CodeSerializerEagerCompilationAndPreAge) {
-  if (FLAG_ignition) return;
+  if (FLAG_ignition || FLAG_turbo) return;
 
   FLAG_lazy = true;
   FLAG_serialize_toplevel = true;
@@ -1949,7 +1952,7 @@ TEST(CodeSerializerEmbeddedObject) {
 }
 
 TEST(SnapshotCreatorMultipleContexts) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   v8::StartupData blob;
   {
     v8::SnapshotCreator creator;
@@ -2026,7 +2029,7 @@ intptr_t replaced_external_references[] = {
     reinterpret_cast<intptr_t>(SerializedCallbackReplacement), 0};
 
 TEST(SnapshotCreatorExternalReferences) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   v8::StartupData blob;
   {
     v8::SnapshotCreator creator(original_external_references);
@@ -2086,7 +2089,7 @@ TEST(SnapshotCreatorExternalReferences) {
 }
 
 TEST(SnapshotCreatorUnknownExternalReferences) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   v8::SnapshotCreator creator;
   v8::Isolate* isolate = creator.GetIsolate();
   {
@@ -2109,10 +2112,38 @@ TEST(SnapshotCreatorUnknownExternalReferences) {
   delete[] blob.data;
 }
 
+struct InternalFieldData {
+  uint32_t data;
+};
+
+v8::StartupData SerializeInternalFields(v8::Local<v8::Object> holder,
+                                        int index) {
+  InternalFieldData* data = static_cast<InternalFieldData*>(
+      holder->GetAlignedPointerFromInternalField(index));
+  int size = sizeof(*data);
+  char* payload = new char[size];
+  // We simply use memcpy to serialize the content.
+  memcpy(payload, data, size);
+  return {payload, size};
+}
+
+void DeserializeInternalFields(v8::Local<v8::Object> holder, int index,
+                               v8::StartupData payload) {
+  InternalFieldData* data = new InternalFieldData{0};
+  memcpy(data, payload.data, payload.raw_size);
+  holder->SetAlignedPointerInInternalField(index, data);
+}
+
 TEST(SnapshotCreatorTemplates) {
-  DisableTurbofan();
+  DisableAlwaysOpt();
   v8::StartupData blob;
+
   {
+    InternalFieldData* a1 = new InternalFieldData{11};
+    InternalFieldData* b0 = new InternalFieldData{20};
+    InternalFieldData* c0 = new InternalFieldData{30};
+    InternalFieldData* c1 = new InternalFieldData{31};
+
     v8::SnapshotCreator creator(original_external_references);
     v8::Isolate* isolate = creator.GetIsolate();
     {
@@ -2125,14 +2156,38 @@ TEST(SnapshotCreatorTemplates) {
       global_template->Set(v8_str("f"), callback);
       v8::Local<v8::Context> context =
           v8::Context::New(isolate, no_extension, global_template);
+      v8::Local<v8::ObjectTemplate> object_template =
+          v8::ObjectTemplate::New(isolate);
+      object_template->SetInternalFieldCount(2);
+
       v8::Context::Scope context_scope(context);
       ExpectInt32("f()", 42);
+
+      v8::Local<v8::Object> a =
+          object_template->NewInstance(context).ToLocalChecked();
+      v8::Local<v8::Object> b =
+          object_template->NewInstance(context).ToLocalChecked();
+      v8::Local<v8::Object> c =
+          object_template->NewInstance(context).ToLocalChecked();
+      a->SetInternalField(0, b);
+      a->SetAlignedPointerInInternalField(1, a1);
+      b->SetAlignedPointerInInternalField(0, b0);
+      b->SetInternalField(1, c);
+      c->SetAlignedPointerInInternalField(0, c0);
+      c->SetAlignedPointerInInternalField(1, c1);
+      CHECK(context->Global()->Set(context, v8_str("a"), a).FromJust());
+
       CHECK_EQ(0, creator.AddContext(context));
       CHECK_EQ(0, creator.AddTemplate(callback));
       CHECK_EQ(1, creator.AddTemplate(global_template));
     }
-    blob =
-        creator.CreateBlob(v8::SnapshotCreator::FunctionCodeHandling::kClear);
+    blob = creator.CreateBlob(v8::SnapshotCreator::FunctionCodeHandling::kClear,
+                              SerializeInternalFields);
+
+    delete a1;
+    delete b0;
+    delete c1;
+    delete c0;
   }
 
   {
@@ -2140,6 +2195,7 @@ TEST(SnapshotCreatorTemplates) {
     params.snapshot_blob = &blob;
     params.array_buffer_allocator = CcTest::array_buffer_allocator();
     params.external_references = original_external_references;
+    params.deserialize_internal_fields_callback = DeserializeInternalFields;
     v8::Isolate* isolate = v8::Isolate::New(params);
     {
       v8::Isolate::Scope isolate_scope(isolate);
@@ -2173,10 +2229,39 @@ TEST(SnapshotCreatorTemplates) {
         // Check that it instantiates to the same prototype.
         ExpectTrue("g.prototype === f.prototype");
 
+        // Retrieve internal fields.
+        v8::Local<v8::Object> a = context->Global()
+                                      ->Get(context, v8_str("a"))
+                                      .ToLocalChecked()
+                                      ->ToObject(context)
+                                      .ToLocalChecked();
+        v8::Local<v8::Object> b =
+            a->GetInternalField(0)->ToObject(context).ToLocalChecked();
+        InternalFieldData* a1 = reinterpret_cast<InternalFieldData*>(
+            a->GetAlignedPointerFromInternalField(1));
+        InternalFieldData* b0 = reinterpret_cast<InternalFieldData*>(
+            b->GetAlignedPointerFromInternalField(0));
+        v8::Local<v8::Object> c =
+            b->GetInternalField(1)->ToObject(context).ToLocalChecked();
+        InternalFieldData* c0 = reinterpret_cast<InternalFieldData*>(
+            c->GetAlignedPointerFromInternalField(0));
+        InternalFieldData* c1 = reinterpret_cast<InternalFieldData*>(
+            c->GetAlignedPointerFromInternalField(1));
+
+        CHECK_EQ(11, a1->data);
+        CHECK_EQ(20, b0->data);
+        CHECK_EQ(30, c0->data);
+        CHECK_EQ(31, c1->data);
+
         // Accessing out of bound returns empty MaybeHandle.
         CHECK(v8::ObjectTemplate::FromSnapshot(isolate, 2).IsEmpty());
         CHECK(v8::FunctionTemplate::FromSnapshot(isolate, 2).IsEmpty());
         CHECK(v8::Context::FromSnapshot(isolate, 2).IsEmpty());
+
+        delete a1;
+        delete b0;
+        delete c1;
+        delete c0;
       }
 
       {

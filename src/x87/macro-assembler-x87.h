@@ -588,12 +588,6 @@ class MacroAssembler: public Assembler {
   // ---------------------------------------------------------------------------
   // Inline caching support
 
-  // Generate code for checking access rights - used for security checks
-  // on access to global objects across environments. The holder register
-  // is left untouched, but the scratch register is clobbered.
-  void CheckAccessGlobalProxy(Register holder_reg, Register scratch1,
-                              Register scratch2, Label* miss);
-
   void GetNumberHash(Register r0, Register scratch);
 
   // ---------------------------------------------------------------------------
@@ -664,12 +658,6 @@ class MacroAssembler: public Assembler {
   // and {value}.
   void AllocateJSValue(Register result, Register constructor, Register value,
                        Register scratch, Label* gc_required);
-
-  // Copy memory, byte-by-byte, from source to destination.  Not optimized for
-  // long or aligned copies.
-  // The contents of index and scratch are destroyed.
-  void CopyBytes(Register source, Register destination, Register length,
-                 Register scratch);
 
   // Initialize fields with filler values.  Fields starting at |current_address|
   // not including |end_address| are overwritten with the value in |filler|.  At
@@ -795,7 +783,10 @@ class MacroAssembler: public Assembler {
   void Drop(int element_count);
 
   void Call(Label* target) { call(target); }
-  void Call(Handle<Code> target, RelocInfo::Mode rmode) { call(target, rmode); }
+  void Call(Handle<Code> target, RelocInfo::Mode rmode,
+            TypeFeedbackId id = TypeFeedbackId::None()) {
+    call(target, rmode, id);
+  }
   void Jump(Handle<Code> target, RelocInfo::Mode rmode) { jmp(target, rmode); }
   void Push(Register src) { push(src); }
   void Push(const Operand& src) { push(src); }

@@ -26,6 +26,9 @@ static const int kProfilerTicksBeforeBaseline = 1;
 // Number of times a function has to be seen on the stack before it is
 // optimized.
 static const int kProfilerTicksBeforeOptimization = 2;
+// Number of times a interpreted function has to be seen on the stack before
+// it is optimized (with Turbofan, ignition is only optimized with Turbofan).
+static const int kProfilerTicksBeforeOptimizingInterpretedFunction = 4;
 // If the function optimization was disabled due to high deoptimization count,
 // but the function is hot and has been seen on the stack this number of times,
 // then we try to reenable optimization for this function.
@@ -36,6 +39,7 @@ static const int kProfilerTicksBeforeReenablingOptimization = 250;
 static const int kTicksWhenNotEnoughTypeInfo = 100;
 // We only have one byte to store the number of ticks.
 STATIC_ASSERT(kProfilerTicksBeforeOptimization < 256);
+STATIC_ASSERT(kProfilerTicksBeforeOptimizingInterpretedFunction < 256);
 STATIC_ASSERT(kProfilerTicksBeforeReenablingOptimization < 256);
 STATIC_ASSERT(kTicksWhenNotEnoughTypeInfo < 256);
 
@@ -43,12 +47,12 @@ STATIC_ASSERT(kTicksWhenNotEnoughTypeInfo < 256);
 static const int kOSRCodeSizeAllowanceBase =
     100 * FullCodeGenerator::kCodeSizeMultiplier;
 static const int kOSRCodeSizeAllowanceBaseIgnition =
-    100 * interpreter::Interpreter::kCodeSizeMultiplier;
+    10 * interpreter::Interpreter::kCodeSizeMultiplier;
 
 static const int kOSRCodeSizeAllowancePerTick =
     4 * FullCodeGenerator::kCodeSizeMultiplier;
 static const int kOSRCodeSizeAllowancePerTickIgnition =
-    4 * interpreter::Interpreter::kCodeSizeMultiplier;
+    2 * interpreter::Interpreter::kCodeSizeMultiplier;
 
 // Maximum size in bytes of generated code for a function to be optimized
 // the very first time it is seen on the stack.
@@ -114,10 +118,7 @@ static void GetICCounts(JSFunction* function, int* ic_with_type_info_count,
       function->shared()->code()->is_interpreter_trampoline_builtin();
 
   vector->ComputeCounts(&with, &gen, &type_vector_ic_count, is_interpreted);
-  if (is_interpreted) {
-    DCHECK_EQ(*ic_total_count, 0);
-    *ic_total_count = type_vector_ic_count;
-  }
+  *ic_total_count += type_vector_ic_count;
   *ic_with_type_info_count += with;
   *ic_generic_count += gen;
 
@@ -266,7 +267,7 @@ void RuntimeProfiler::MaybeOptimizeFullCodegen(JSFunction* function,
     }
     return;
   }
-  if (function->IsOptimized()) return;
+  if (frame->is_optimized()) return;
 
   int ticks = shared_code->profiler_ticks();
 
@@ -360,7 +361,7 @@ void RuntimeProfiler::MaybeOptimizeIgnition(JSFunction* function,
     return;
   }
 
-  if (function->IsOptimized()) return;
+  if (frame->is_optimized()) return;
 
   OptimizationReason reason = ShouldOptimizeIgnition(function, frame);
 
@@ -371,8 +372,6 @@ void RuntimeProfiler::MaybeOptimizeIgnition(JSFunction* function,
 
 bool RuntimeProfiler::MaybeOSRIgnition(JSFunction* function,
                                        JavaScriptFrame* frame) {
-  if (!FLAG_ignition_osr) return false;
-
   SharedFunctionInfo* shared = function->shared();
   int ticks = shared->profiler_ticks();
 
@@ -404,7 +403,7 @@ OptimizationReason RuntimeProfiler::ShouldOptimizeIgnition(
   SharedFunctionInfo* shared = function->shared();
   int ticks = shared->profiler_ticks();
 
-  if (ticks >= kProfilerTicksBeforeOptimization) {
+  if (ticks >= kProfilerTicksBeforeOptimizingInterpretedFunction) {
     int typeinfo, generic, total, type_percentage, generic_percentage;
     GetICCounts(function, &typeinfo, &generic, &total, &type_percentage,
                 &generic_percentage);

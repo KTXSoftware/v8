@@ -528,8 +528,7 @@ void IncrementalMarking::StartMarking() {
   if (heap_->UsingEmbedderHeapTracer()) {
     TRACE_GC(heap()->tracer(),
              GCTracer::Scope::MC_INCREMENTAL_WRAPPER_PROLOGUE);
-    heap_->embedder_heap_tracer()->TracePrologue(
-        heap_->embedder_reachable_reference_reporter());
+    heap_->embedder_heap_tracer()->TracePrologue();
   }
 
   RecordWriteStub::Mode mode = is_compacting_
@@ -538,8 +537,7 @@ void IncrementalMarking::StartMarking() {
 
   PatchIncrementalMarkingRecordWriteStubs(heap_, mode);
 
-  heap_->mark_compact_collector()->EnsureMarkingDequeIsCommittedAndInitialize(
-      MarkCompactCollector::kMaxMarkingDequeSize);
+  heap_->mark_compact_collector()->marking_deque()->StartUsing();
 
   ActivateIncrementalWriteBarrier();
 
@@ -587,9 +585,6 @@ void IncrementalMarking::FinishBlackAllocation() {
 }
 
 void IncrementalMarking::AbortBlackAllocation() {
-  for (Page* page : *heap()->old_space()) {
-    page->ReleaseBlackAreaEndMarkerMap();
-  }
   if (FLAG_trace_incremental_marking) {
     heap()->isolate()->PrintWithTimestamp(
         "[IncrementalMarking] Black allocation aborted\n");

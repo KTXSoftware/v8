@@ -31,11 +31,11 @@ class FunctionEntry BASE_EMBEDDED {
   enum {
     kStartPositionIndex,
     kEndPositionIndex,
+    kNumParametersIndex,
+    kFunctionLengthIndex,
     kLiteralCountIndex,
     kPropertyCountIndex,
-    kLanguageModeIndex,
-    kUsesSuperPropertyIndex,
-    kCallsEvalIndex,
+    kFlagsIndex,
     kSize
   };
 
@@ -44,18 +44,43 @@ class FunctionEntry BASE_EMBEDDED {
 
   FunctionEntry() : backing_() { }
 
-  int start_pos() { return backing_[kStartPositionIndex]; }
-  int end_pos() { return backing_[kEndPositionIndex]; }
-  int literal_count() { return backing_[kLiteralCountIndex]; }
-  int property_count() { return backing_[kPropertyCountIndex]; }
-  LanguageMode language_mode() {
-    DCHECK(is_valid_language_mode(backing_[kLanguageModeIndex]));
-    return static_cast<LanguageMode>(backing_[kLanguageModeIndex]);
-  }
-  bool uses_super_property() { return backing_[kUsesSuperPropertyIndex]; }
-  bool calls_eval() { return backing_[kCallsEvalIndex]; }
+  class LanguageModeField : public BitField<LanguageMode, 0, 1> {};
+  class UsesSuperPropertyField
+      : public BitField<bool, LanguageModeField::kNext, 1> {};
+  class CallsEvalField
+      : public BitField<bool, UsesSuperPropertyField::kNext, 1> {};
+  class HasDuplicateParametersField
+      : public BitField<bool, CallsEvalField::kNext, 1> {};
 
-  bool is_valid() { return !backing_.is_empty(); }
+  static uint32_t EncodeFlags(LanguageMode language_mode,
+                              bool uses_super_property, bool calls_eval,
+                              bool has_duplicate_parameters) {
+    return LanguageModeField::encode(language_mode) |
+           UsesSuperPropertyField::encode(uses_super_property) |
+           CallsEvalField::encode(calls_eval) |
+           HasDuplicateParametersField::encode(has_duplicate_parameters);
+  }
+
+  int start_pos() const { return backing_[kStartPositionIndex]; }
+  int end_pos() const { return backing_[kEndPositionIndex]; }
+  int num_parameters() const { return backing_[kNumParametersIndex]; }
+  int function_length() const { return backing_[kFunctionLengthIndex]; }
+  int literal_count() const { return backing_[kLiteralCountIndex]; }
+  int property_count() const { return backing_[kPropertyCountIndex]; }
+  LanguageMode language_mode() const {
+    return LanguageModeField::decode(backing_[kFlagsIndex]);
+  }
+  bool uses_super_property() const {
+    return UsesSuperPropertyField::decode(backing_[kFlagsIndex]);
+  }
+  bool calls_eval() const {
+    return CallsEvalField::decode(backing_[kFlagsIndex]);
+  }
+  bool has_duplicate_parameters() const {
+    return HasDuplicateParametersField::decode(backing_[kFlagsIndex]);
+  }
+
+  bool is_valid() const { return !backing_.is_empty(); }
 
  private:
   Vector<unsigned> backing_;
@@ -463,13 +488,13 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   void InsertSloppyBlockFunctionVarBindings(DeclarationScope* scope);
 
   VariableProxy* NewUnresolved(const AstRawString* name, int begin_pos,
-                               int end_pos = kNoSourcePosition,
                                VariableKind kind = NORMAL_VARIABLE);
   VariableProxy* NewUnresolved(const AstRawString* name);
   Variable* Declare(Declaration* declaration,
                     DeclarationDescriptor::Kind declaration_kind,
                     VariableMode mode, InitializationFlag init, bool* ok,
-                    Scope* declaration_scope = nullptr);
+                    Scope* declaration_scope = nullptr,
+                    int var_end_pos = kNoSourcePosition);
   Declaration* DeclareVariable(const AstRawString* name, VariableMode mode,
                                int pos, bool* ok);
   Declaration* DeclareVariable(const AstRawString* name, VariableMode mode,
@@ -490,13 +515,17 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   // by parsing the function with PreParser. Consumes the ending }.
   // If may_abort == true, the (pre-)parser may decide to abort skipping
   // in order to force the function to be eagerly parsed, after all.
-  LazyParsingResult SkipLazyFunctionBody(int* materialized_literal_count,
-                                         int* expected_property_count,
-                                         bool is_inner_function, bool may_abort,
-                                         bool* ok);
+  LazyParsingResult SkipFunction(
+      FunctionKind kind, DeclarationScope* function_scope, int* num_parameters,
+      int* function_length, bool* has_duplicate_parameters,
+      int* materialized_literal_count, int* expected_property_count,
+      bool is_inner_function, bool may_abort, bool* ok);
 
-  PreParser::PreParseResult ParseFunctionBodyWithPreParser(
-      SingletonLogger* logger, bool is_inner_function, bool may_abort);
+  PreParser::PreParseResult ParseFunctionWithPreParser(FunctionKind kind,
+                                                       DeclarationScope* scope,
+                                                       SingletonLogger* logger,
+                                                       bool is_inner_function,
+                                                       bool may_abort);
 
   Block* BuildParameterInitializationBlock(
       const ParserFormalParameters& parameters, bool* ok);
@@ -507,6 +536,13 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
       const AstRawString* function_name, int pos,
       const ParserFormalParameters& parameters, FunctionKind kind,
       FunctionLiteral::FunctionType function_type, bool* ok);
+
+  ZoneList<Statement*>* ParseFunction(
+      const AstRawString* function_name, int pos, FunctionKind kind,
+      FunctionLiteral::FunctionType function_type,
+      DeclarationScope* function_scope, int* num_parameters,
+      int* function_length, bool* has_duplicate_parameters,
+      int* materialized_literal_count, int* expected_property_count, bool* ok);
 
   void ThrowPendingError(Isolate* isolate, Handle<Script> script);
 
@@ -931,7 +967,7 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   }
 
   V8_INLINE Expression* ThisExpression(int pos = kNoSourcePosition) {
-    return NewUnresolved(ast_value_factory()->this_string(), pos, pos + 4,
+    return NewUnresolved(ast_value_factory()->this_string(), pos,
                          THIS_VARIABLE);
   }
 
@@ -943,12 +979,12 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   Literal* ExpressionFromLiteral(Token::Value token, int pos);
 
   V8_INLINE Expression* ExpressionFromIdentifier(
-      const AstRawString* name, int start_position, int end_position,
+      const AstRawString* name, int start_position,
       InferName infer = InferName::kYes) {
     if (infer == InferName::kYes) {
       fni_->PushVariableName(name);
     }
-    return NewUnresolved(name, start_position, end_position);
+    return NewUnresolved(name, start_position);
   }
 
   V8_INLINE Expression* ExpressionFromString(int pos) {
@@ -1099,7 +1135,6 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
   // parsing.
   int use_counts_[v8::Isolate::kUseCounterFeatureCount];
   int total_preparse_skipped_;
-  HistogramTimer* pre_parse_timer_;
 
   bool parsing_on_main_thread_;
 };

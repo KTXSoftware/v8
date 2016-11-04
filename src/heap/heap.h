@@ -48,8 +48,6 @@ using v8::MemoryPressureLevel;
   V(Map, one_byte_string_map, OneByteStringMap)                                \
   V(Map, one_byte_internalized_string_map, OneByteInternalizedStringMap)       \
   V(Map, scope_info_map, ScopeInfoMap)                                         \
-  V(Map, module_info_entry_map, ModuleInfoEntryMap)                            \
-  V(Map, module_info_map, ModuleInfoMap)                                       \
   V(Map, shared_function_info_map, SharedFunctionInfoMap)                      \
   V(Map, code_map, CodeMap)                                                    \
   V(Map, function_context_map, FunctionContextMap)                             \
@@ -62,12 +60,13 @@ using v8::MemoryPressureLevel;
   V(FixedArray, empty_literals_array, EmptyLiteralsArray)                      \
   V(FixedArray, empty_type_feedback_vector, EmptyTypeFeedbackVector)           \
   V(FixedArray, empty_fixed_array, EmptyFixedArray)                            \
-  V(ScopeInfo, empty_scope_info, EmptyScopeInfo)                               \
   V(DescriptorArray, empty_descriptor_array, EmptyDescriptorArray)             \
   /* Entries beyond the first 32                                            */ \
   /* The roots above this line should be boring from a GC point of view.    */ \
   /* This means they are never in new space and never on a page that is     */ \
   /* being compacted.                                                       */ \
+  /* Empty scope info */                                                       \
+  V(ScopeInfo, empty_scope_info, EmptyScopeInfo)                               \
   /* Oddballs */                                                               \
   V(Oddball, no_interceptor_result_sentinel, NoInterceptorResultSentinel)      \
   V(Oddball, arguments_marker, ArgumentsMarker)                                \
@@ -91,9 +90,9 @@ using v8::MemoryPressureLevel;
   V(Map, unseeded_number_dictionary_map, UnseededNumberDictionaryMap)          \
   V(Map, sloppy_arguments_elements_map, SloppyArgumentsElementsMap)            \
   V(Map, message_object_map, JSMessageObjectMap)                               \
-  V(Map, neander_map, NeanderMap)                                              \
   V(Map, external_map, ExternalMap)                                            \
   V(Map, bytecode_array_map, BytecodeArrayMap)                                 \
+  V(Map, module_info_map, ModuleInfoMap)                                       \
   /* String maps */                                                            \
   V(Map, native_source_string_map, NativeSourceStringMap)                      \
   V(Map, string_map, StringMap)                                                \
@@ -277,7 +276,6 @@ using v8::MemoryPressureLevel;
   V(FixedArrayMap)                      \
   V(CodeMap)                            \
   V(ScopeInfoMap)                       \
-  V(ModuleInfoEntryMap)                 \
   V(ModuleInfoMap)                      \
   V(FixedCOWArrayMap)                   \
   V(FixedDoubleArrayMap)                \
@@ -306,7 +304,6 @@ using v8::MemoryPressureLevel;
   V(ArgumentsMarkerMap)                 \
   V(JSMessageObjectMap)                 \
   V(ForeignMap)                         \
-  V(NeanderMap)                         \
   V(NanValue)                           \
   V(InfinityValue)                      \
   V(MinusZeroValue)                     \
@@ -1202,10 +1199,6 @@ class Heap {
 
   EmbedderHeapTracer* embedder_heap_tracer() { return embedder_heap_tracer_; }
 
-  EmbedderReachableReferenceReporter* embedder_reachable_reference_reporter() {
-    return embedder_reference_reporter_;
-  }
-
   size_t wrappers_to_trace() { return wrappers_to_trace_.size(); }
 
   // ===========================================================================
@@ -1442,6 +1435,10 @@ class Heap {
   // ArrayBuffer tracking. =====================================================
   // ===========================================================================
 
+  // TODO(gc): API usability: encapsulate mutation of JSArrayBuffer::is_external
+  // in the registration/unregistration APIs. Consider dropping the "New" from
+  // "RegisterNewArrayBuffer" because one can re-register a previously
+  // unregistered buffer, too, and the name is confusing.
   void RegisterNewArrayBuffer(JSArrayBuffer* buffer);
   void UnregisterArrayBuffer(JSArrayBuffer* buffer);
 
@@ -2308,11 +2305,11 @@ class Heap {
   int heap_iterator_depth_;
 
   EmbedderHeapTracer* embedder_heap_tracer_;
-  EmbedderReachableReferenceReporter* embedder_reference_reporter_;
   std::vector<std::pair<void*, void*>> wrappers_to_trace_;
 
   // Used for testing purposes.
   bool force_oom_;
+  bool delay_sweeper_tasks_for_testing_;
 
   // Classes in "heap" can be friends.
   friend class AlwaysAllocateScope;
@@ -2629,18 +2626,6 @@ class AllocationObserver {
   friend class NewSpace;
   friend class PagedSpace;
   DISALLOW_COPY_AND_ASSIGN(AllocationObserver);
-};
-
-class TracePossibleWrapperReporter : public EmbedderReachableReferenceReporter {
- public:
-  explicit TracePossibleWrapperReporter(Heap* heap) : heap_(heap) {}
-  void ReportExternalReference(Value* object) override {
-    heap_->RegisterExternallyReferencedObject(
-        reinterpret_cast<Object**>(object));
-  }
-
- private:
-  Heap* heap_;
 };
 
 }  // namespace internal

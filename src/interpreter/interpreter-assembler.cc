@@ -104,7 +104,7 @@ Node* InterpreterAssembler::GetContextAtDepth(Node* context, Node* depth) {
   {
     cur_depth.Bind(Int32Sub(cur_depth.value(), Int32Constant(1)));
     cur_context.Bind(
-        LoadContextSlot(cur_context.value(), Context::PREVIOUS_INDEX));
+        LoadContextElement(cur_context.value(), Context::PREVIOUS_INDEX));
 
     Branch(Word32Equal(cur_depth.value(), Int32Constant(0)), &context_found,
            &context_search);
@@ -135,14 +135,14 @@ void InterpreterAssembler::GotoIfHasContextExtensionUpToDepth(Node* context,
     // contexts actually need to be checked.
 
     Node* extension_slot =
-        LoadContextSlot(cur_context.value(), Context::EXTENSION_INDEX);
+        LoadContextElement(cur_context.value(), Context::EXTENSION_INDEX);
 
     // Jump to the target if the extension slot is not a hole.
     GotoIf(WordNotEqual(extension_slot, TheHoleConstant()), target);
 
     cur_depth.Bind(Int32Sub(cur_depth.value(), Int32Constant(1)));
     cur_context.Bind(
-        LoadContextSlot(cur_context.value(), Context::PREVIOUS_INDEX));
+        LoadContextElement(cur_context.value(), Context::PREVIOUS_INDEX));
 
     GotoIf(Word32NotEqual(cur_depth.value(), Int32Constant(0)),
            &context_search);
@@ -485,11 +485,6 @@ Node* InterpreterAssembler::LoadAndUntagConstantPoolEntry(Node* index) {
   }
 }
 
-Node* InterpreterAssembler::LoadContextSlot(Node* context, int slot_index) {
-  return Load(MachineType::AnyTagged(), context,
-              IntPtrConstant(Context::SlotOffset(slot_index)));
-}
-
 Node* InterpreterAssembler::LoadContextSlot(Node* context, Node* slot_index) {
   Node* offset =
       IntPtrAdd(WordShl(slot_index, kPointerSizeLog2),
@@ -571,7 +566,7 @@ Node* InterpreterAssembler::CallJSWithFeedback(Node* function, Node* context,
 
   // The checks. First, does function match the recorded monomorphic target?
   Node* feedback_element = LoadFixedArrayElement(type_feedback_vector, slot_id);
-  Node* feedback_value = LoadWeakCellValue(feedback_element);
+  Node* feedback_value = LoadWeakCellValueUnchecked(feedback_element);
   Node* is_monomorphic = WordEqual(function, feedback_value);
   Branch(is_monomorphic, &handle_monomorphic, &extra_checks);
 
@@ -776,7 +771,7 @@ Node* InterpreterAssembler::CallConstruct(Node* constructor, Node* context,
 
     Node* feedback_element =
         LoadFixedArrayElement(type_feedback_vector, slot_id);
-    Node* feedback_value = LoadWeakCellValue(feedback_element);
+    Node* feedback_value = LoadWeakCellValueUnchecked(feedback_element);
     Node* is_monomorphic = WordEqual(constructor, feedback_value);
     Branch(is_monomorphic, &call_construct_function, &extra_checks);
 
@@ -1160,7 +1155,8 @@ Node* InterpreterAssembler::TruncateTaggedToWord32WithFeedback(
       // Check if {value} is a HeapNumber.
       Label if_valueisheapnumber(this),
           if_valueisnotheapnumber(this, Label::kDeferred);
-      Branch(WordEqual(LoadMap(value), HeapNumberMapConstant()),
+      Node* value_map = LoadMap(value);
+      Branch(WordEqual(value_map, HeapNumberMapConstant()),
              &if_valueisheapnumber, &if_valueisnotheapnumber);
 
       Bind(&if_valueisheapnumber);
@@ -1175,11 +1171,35 @@ Node* InterpreterAssembler::TruncateTaggedToWord32WithFeedback(
 
       Bind(&if_valueisnotheapnumber);
       {
-        // Convert the {value} to a Number first.
-        Callable callable = CodeFactory::NonNumberToNumber(isolate());
-        var_value.Bind(CallStub(callable, context, value));
-        var_type_feedback->Bind(Int32Constant(BinaryOperationFeedback::kAny));
-        Goto(&loop);
+        // We do not require an Or with earlier feedback here because once we
+        // convert the value to a number, we cannot reach this path. We can
+        // only reach this path on the first pass when the feedback is kNone.
+        Assert(Word32Equal(var_type_feedback->value(),
+                           Int32Constant(BinaryOperationFeedback::kNone)));
+
+        Label if_valueisoddball(this),
+            if_valueisnotoddball(this, Label::kDeferred);
+        Node* is_oddball = Word32Equal(LoadMapInstanceType(value_map),
+                                       Int32Constant(ODDBALL_TYPE));
+        Branch(is_oddball, &if_valueisoddball, &if_valueisnotoddball);
+
+        Bind(&if_valueisoddball);
+        {
+          // Convert Oddball to a Number and perform checks again.
+          var_value.Bind(LoadObjectField(value, Oddball::kToNumberOffset));
+          var_type_feedback->Bind(
+              Int32Constant(BinaryOperationFeedback::kNumberOrOddball));
+          Goto(&loop);
+        }
+
+        Bind(&if_valueisnotoddball);
+        {
+          // Convert the {value} to a Number first.
+          Callable callable = CodeFactory::NonNumberToNumber(isolate());
+          var_value.Bind(CallStub(callable, context, value));
+          var_type_feedback->Bind(Int32Constant(BinaryOperationFeedback::kAny));
+          Goto(&loop);
+        }
       }
     }
   }

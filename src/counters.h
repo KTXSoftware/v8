@@ -7,6 +7,7 @@
 
 #include "include/v8.h"
 #include "src/allocation.h"
+#include "src/base/atomic-utils.h"
 #include "src/base/platform/elapsed-timer.h"
 #include "src/base/platform/time.h"
 #include "src/builtins/builtins.h"
@@ -496,16 +497,16 @@ struct RuntimeCallCounter {
 // timers used for properly measuring the own time of a RuntimeCallCounter.
 class RuntimeCallTimer {
  public:
-  RuntimeCallTimer() {}
   RuntimeCallCounter* counter() { return counter_; }
   base::ElapsedTimer timer() { return timer_; }
+  RuntimeCallTimer* parent() const { return parent_.Value(); }
 
  private:
   friend class RuntimeCallStats;
 
   inline void Start(RuntimeCallCounter* counter, RuntimeCallTimer* parent) {
     counter_ = counter;
-    parent_ = parent;
+    parent_.SetValue(parent);
     timer_.Start();
   }
 
@@ -514,15 +515,25 @@ class RuntimeCallTimer {
     timer_.Stop();
     counter_->count++;
     counter_->time += delta;
-    if (parent_ != NULL) {
+    if (parent()) {
       // Adjust parent timer so that it does not include sub timer's time.
-      parent_->counter_->time -= delta;
+      parent()->counter_->time -= delta;
     }
-    return parent_;
+    return parent();
+  }
+
+  inline void Elapsed() {
+    base::TimeDelta delta = timer_.Elapsed();
+    counter_->time += delta;
+    if (parent()) {
+      parent()->counter_->time -= delta;
+      parent()->Elapsed();
+    }
+    timer_.Restart();
   }
 
   RuntimeCallCounter* counter_ = nullptr;
-  RuntimeCallTimer* parent_ = nullptr;
+  base::AtomicValue<RuntimeCallTimer*> parent_;
   base::ElapsedTimer timer_;
 };
 
@@ -671,6 +682,11 @@ class RuntimeCallTimer {
 #define FOR_EACH_MANUAL_COUNTER(V)                  \
   V(AccessorGetterCallback)                         \
   V(AccessorNameGetterCallback)                     \
+  V(AccessorNameGetterCallback_ArrayLength)         \
+  V(AccessorNameGetterCallback_BoundFunctionLength) \
+  V(AccessorNameGetterCallback_BoundFunctionName)   \
+  V(AccessorNameGetterCallback_FunctionPrototype)   \
+  V(AccessorNameGetterCallback_StringLength)        \
   V(AccessorNameSetterCallback)                     \
   V(Compile)                                        \
   V(CompileCode)                                    \
@@ -728,6 +744,14 @@ class RuntimeCallTimer {
   V(KeyedStoreIC_StoreElementStub)              \
   V(KeyedStoreIC_Polymorphic)                   \
   V(LoadIC_FunctionPrototypeStub)               \
+  V(LoadIC_HandlerCacheHit_AccessCheck)         \
+  V(LoadIC_HandlerCacheHit_Exotic)              \
+  V(LoadIC_HandlerCacheHit_Interceptor)         \
+  V(LoadIC_HandlerCacheHit_JSProxy)             \
+  V(LoadIC_HandlerCacheHit_NonExistent)         \
+  V(LoadIC_HandlerCacheHit_Accessor)            \
+  V(LoadIC_HandlerCacheHit_Data)                \
+  V(LoadIC_HandlerCacheHit_Transition)          \
   V(LoadIC_LoadApiGetterStub)                   \
   V(LoadIC_LoadCallback)                        \
   V(LoadIC_LoadConstantDH)                      \
@@ -740,15 +764,27 @@ class RuntimeCallTimer {
   V(LoadIC_LoadFieldStub)                       \
   V(LoadIC_LoadGlobal)                          \
   V(LoadIC_LoadInterceptor)                     \
+  V(LoadIC_LoadNonexistentDH)                   \
   V(LoadIC_LoadNonexistent)                     \
   V(LoadIC_LoadNormal)                          \
   V(LoadIC_LoadScriptContextFieldStub)          \
   V(LoadIC_LoadViaGetter)                       \
+  V(LoadIC_Premonomorphic)                      \
   V(LoadIC_SlowStub)                            \
   V(LoadIC_StringLengthStub)                    \
+  V(StoreIC_HandlerCacheHit_AccessCheck)        \
+  V(StoreIC_HandlerCacheHit_Exotic)             \
+  V(StoreIC_HandlerCacheHit_Interceptor)        \
+  V(StoreIC_HandlerCacheHit_JSProxy)            \
+  V(StoreIC_HandlerCacheHit_NonExistent)        \
+  V(StoreIC_HandlerCacheHit_Accessor)           \
+  V(StoreIC_HandlerCacheHit_Data)               \
+  V(StoreIC_HandlerCacheHit_Transition)         \
+  V(StoreIC_Premonomorphic)                     \
   V(StoreIC_SlowStub)                           \
   V(StoreIC_StoreCallback)                      \
   V(StoreIC_StoreField)                         \
+  V(StoreIC_StoreFieldDH)                       \
   V(StoreIC_StoreFieldStub)                     \
   V(StoreIC_StoreGlobal)                        \
   V(StoreIC_StoreGlobalTransition)              \
@@ -807,24 +843,23 @@ class RuntimeCallStats {
     in_use_ = false;
   }
 
-  RuntimeCallTimer* current_timer() { return current_timer_; }
+  RuntimeCallTimer* current_timer() { return current_timer_.Value(); }
   bool InUse() { return in_use_; }
 
  private:
   // Counter to track recursive time events.
-  RuntimeCallTimer* current_timer_ = NULL;
+  base::AtomicValue<RuntimeCallTimer*> current_timer_;
   // Used to track nested tracing scopes.
   bool in_use_;
 };
 
-#define TRACE_RUNTIME_CALL_STATS(isolate, counter_name)                 \
-  do {                                                                  \
-    if (V8_UNLIKELY(TRACE_EVENT_RUNTIME_CALL_STATS_TRACING_ENABLED() || \
-                    FLAG_runtime_call_stats)) {                         \
-      RuntimeCallStats::CorrectCurrentCounterId(                        \
-          isolate->counters()->runtime_call_stats(),                    \
-          &RuntimeCallStats::counter_name);                             \
-    }                                                                   \
+#define TRACE_RUNTIME_CALL_STATS(isolate, counter_name) \
+  do {                                                  \
+    if (V8_UNLIKELY(FLAG_runtime_stats)) {              \
+      RuntimeCallStats::CorrectCurrentCounterId(        \
+          isolate->counters()->runtime_call_stats(),    \
+          &RuntimeCallStats::counter_name);             \
+    }                                                   \
   } while (false)
 
 #define TRACE_HANDLER_STATS(isolate, counter_name) \
@@ -863,10 +898,6 @@ class RuntimeCallStats {
      MILLISECOND)                                                              \
   HT(gc_low_memory_notification, V8.GCLowMemoryNotification, 10000,            \
      MILLISECOND)                                                              \
-  /* Parsing timers. */                                                        \
-  HT(parse, V8.ParseMicroSeconds, 1000000, MICROSECOND)                        \
-  HT(parse_lazy, V8.ParseLazyMicroSeconds, 1000000, MICROSECOND)               \
-  HT(pre_parse, V8.PreParseMicroSeconds, 1000000, MICROSECOND)                 \
   /* Compilation times. */                                                     \
   HT(compile, V8.CompileMicroSeconds, 1000000, MICROSECOND)                    \
   HT(compile_eval, V8.CompileEvalMicroSeconds, 1000000, MICROSECOND)           \

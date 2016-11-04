@@ -129,7 +129,8 @@ Handle<JSReceiver> LookupIterator::GetRootForNonJSReceiver(
     Handle<JSValue>::cast(result)->set_value(*receiver);
     return result;
   }
-  auto root = handle(receiver->GetRootMap(isolate)->prototype(), isolate);
+  auto root =
+      handle(receiver->GetPrototypeChainRootMap(isolate)->prototype(), isolate);
   if (root->IsNull(isolate)) {
     unsigned int magic = 0xbbbbbbbb;
     isolate->PushStackTraceAndDie(magic, *receiver, NULL, magic);
@@ -593,6 +594,12 @@ Handle<Object> LookupIterator::FetchValue() const {
   return handle(result, isolate_);
 }
 
+int LookupIterator::GetFieldDescriptorIndex() const {
+  DCHECK(has_property_);
+  DCHECK(holder_->HasFastProperties());
+  DCHECK_EQ(v8::internal::DATA, property_details_.type());
+  return descriptor_number();
+}
 
 int LookupIterator::GetAccessorIndex() const {
   DCHECK(has_property_);
@@ -833,6 +840,28 @@ Handle<InterceptorInfo> LookupIterator::GetInterceptorForFailedAccessCheck()
     }
   }
   return Handle<InterceptorInfo>();
+}
+
+bool LookupIterator::TryLookupCachedProperty() {
+  return state() == LookupIterator::ACCESSOR &&
+         GetAccessors()->IsAccessorPair() && LookupCachedProperty();
+}
+
+bool LookupIterator::LookupCachedProperty() {
+  DCHECK_EQ(state(), LookupIterator::ACCESSOR);
+  DCHECK(GetAccessors()->IsAccessorPair());
+
+  AccessorPair* accessor_pair = AccessorPair::cast(*GetAccessors());
+  Handle<Object> getter(accessor_pair->getter(), isolate());
+  MaybeHandle<Name> maybe_name =
+      FunctionTemplateInfo::TryGetCachedPropertyName(isolate(), getter);
+  if (maybe_name.is_null()) return false;
+
+  // We have found a cached property! Modify the iterator accordingly.
+  name_ = maybe_name.ToHandleChecked();
+  Restart();
+  CHECK_EQ(state(), LookupIterator::DATA);
+  return true;
 }
 
 }  // namespace internal
