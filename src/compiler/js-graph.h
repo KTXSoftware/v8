@@ -49,7 +49,6 @@ class V8_EXPORT_PRIVATE JSGraph : public NON_EXPORTED_BASE(ZoneObject) {
                            ArgvMode argv_mode = kArgvOnStack,
                            bool builtin_exit_frame = false);
   Node* EmptyFixedArrayConstant();
-  Node* EmptyLiteralsArrayConstant();
   Node* EmptyStringConstant();
   Node* FixedArrayMapConstant();
   Node* FixedDoubleArrayMapConstant();
@@ -108,10 +107,6 @@ class V8_EXPORT_PRIVATE JSGraph : public NON_EXPORTED_BASE(ZoneObject) {
     return machine()->Is32() ? Int32Constant(static_cast<int32_t>(value))
                              : Int64Constant(static_cast<int64_t>(value));
   }
-  template <typename T>
-  Node* PointerConstant(T* value) {
-    return IntPtrConstant(bit_cast<intptr_t>(value));
-  }
 
   Node* RelocatableInt32Constant(int32_t value, RelocInfo::Mode rmode);
   Node* RelocatableInt64Constant(int64_t value, RelocInfo::Mode rmode);
@@ -122,6 +117,13 @@ class V8_EXPORT_PRIVATE JSGraph : public NON_EXPORTED_BASE(ZoneObject) {
 
   // Creates a Float64Constant node, usually canonicalized.
   Node* Float64Constant(double value);
+
+  // Creates a PointerConstant node (asm.js only).
+  Node* PointerConstant(intptr_t value);
+  template <typename T>
+  Node* PointerConstant(T* value) {
+    return PointerConstant(bit_cast<intptr_t>(value));
+  }
 
   // Creates an ExternalConstant node, usually canonicalized.
   Node* ExternalConstant(ExternalReference ref);
@@ -159,10 +161,11 @@ class V8_EXPORT_PRIVATE JSGraph : public NON_EXPORTED_BASE(ZoneObject) {
     kAllocateInNewSpaceStubConstant,
     kAllocateInOldSpaceStubConstant,
     kToNumberBuiltinConstant,
-    kCEntryStubConstant,
-    kCEntryStubWithBuiltinExitFrameConstant,
+    kCEntryStub1Constant,
+    kCEntryStub2Constant,
+    kCEntryStub3Constant,
+    kCEntryStub1WithBuiltinExitFrameConstant,
     kEmptyFixedArrayConstant,
-    kEmptyLiteralsArrayConstant,
     kEmptyStringConstant,
     kFixedArrayMapConstant,
     kFixedDoubleArrayMapConstant,

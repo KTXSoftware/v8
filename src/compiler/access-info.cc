@@ -25,8 +25,6 @@ bool CanInlineElementAccess(Handle<Map> map) {
   if (map->has_indexed_interceptor()) return false;
   ElementsKind const elements_kind = map->elements_kind();
   if (IsFastElementsKind(elements_kind)) return true;
-  // TODO(bmeurer): Add support for other elements kind.
-  if (elements_kind == UINT8_CLAMPED_ELEMENTS) return false;
   if (IsFixedTypedArrayElementsKind(elements_kind)) return true;
   return false;
 }
@@ -54,6 +52,8 @@ std::ostream& operator<<(std::ostream& os, AccessMode access_mode) {
       return os << "Load";
     case AccessMode::kStore:
       return os << "Store";
+    case AccessMode::kStoreInLiteral:
+      return os << "StoreInLiteral";
   }
   UNREACHABLE();
   return os;
@@ -80,11 +80,12 @@ PropertyAccessInfo PropertyAccessInfo::DataConstant(
 
 // static
 PropertyAccessInfo PropertyAccessInfo::DataField(
-    MapList const& receiver_maps, FieldIndex field_index,
-    MachineRepresentation field_representation, Type* field_type,
-    MaybeHandle<Map> field_map, MaybeHandle<JSObject> holder,
+    PropertyConstness constness, MapList const& receiver_maps,
+    FieldIndex field_index, MachineRepresentation field_representation,
+    Type* field_type, MaybeHandle<Map> field_map, MaybeHandle<JSObject> holder,
     MaybeHandle<Map> transition_map) {
-  return PropertyAccessInfo(holder, transition_map, field_index,
+  Kind kind = constness == kConst ? kDataConstantField : kDataField;
+  return PropertyAccessInfo(kind, holder, transition_map, field_index,
                             field_representation, field_type, field_map,
                             receiver_maps);
 }
@@ -120,10 +121,10 @@ PropertyAccessInfo::PropertyAccessInfo(Kind kind, MaybeHandle<JSObject> holder,
       field_type_(Type::Any()) {}
 
 PropertyAccessInfo::PropertyAccessInfo(
-    MaybeHandle<JSObject> holder, MaybeHandle<Map> transition_map,
+    Kind kind, MaybeHandle<JSObject> holder, MaybeHandle<Map> transition_map,
     FieldIndex field_index, MachineRepresentation field_representation,
     Type* field_type, MaybeHandle<Map> field_map, MapList const& receiver_maps)
-    : kind_(kDataField),
+    : kind_(kind),
       receiver_maps_(receiver_maps),
       transition_map_(transition_map),
       holder_(holder),
@@ -140,13 +141,13 @@ bool PropertyAccessInfo::Merge(PropertyAccessInfo const* that) {
     case kInvalid:
       break;
 
-    case kNotFound:
-      return true;
-
-    case kDataField: {
+    case kDataField:
+    case kDataConstantField: {
       // Check if we actually access the same field.
-      if (this->transition_map_.address() == that->transition_map_.address() &&
+      if (this->kind_ == that->kind_ &&
+          this->transition_map_.address() == that->transition_map_.address() &&
           this->field_index_ == that->field_index_ &&
+          this->field_map_.address() == that->field_map_.address() &&
           this->field_type_->Is(that->field_type_) &&
           that->field_type_->Is(this->field_type_) &&
           this->field_representation_ == that->field_representation_) {
@@ -168,6 +169,13 @@ bool PropertyAccessInfo::Merge(PropertyAccessInfo const* that) {
         return true;
       }
       return false;
+    }
+
+    case kNotFound: {
+      this->receiver_maps_.insert(this->receiver_maps_.end(),
+                                  that->receiver_maps_.begin(),
+                                  that->receiver_maps_.end());
+      return true;
     }
   }
 
@@ -272,7 +280,8 @@ bool AccessInfoFactory::ComputePropertyAccessInfo(
     int const number = descriptors->SearchWithCache(isolate(), *name, *map);
     if (number != DescriptorArray::kNotFound) {
       PropertyDetails const details = descriptors->GetDetails(number);
-      if (access_mode == AccessMode::kStore) {
+      if (access_mode == AccessMode::kStore ||
+          access_mode == AccessMode::kStoreInLiteral) {
         // Don't bother optimizing stores to read-only properties.
         if (details.IsReadOnly()) {
           return false;
@@ -285,14 +294,8 @@ bool AccessInfoFactory::ComputePropertyAccessInfo(
           return LookupTransition(receiver_map, name, holder, access_info);
         }
       }
-      switch (details.type()) {
-        case DATA_CONSTANT: {
-          *access_info = PropertyAccessInfo::DataConstant(
-              MapList{receiver_map},
-              handle(descriptors->GetValue(number), isolate()), holder);
-          return true;
-        }
-        case DATA: {
+      if (details.location() == kField) {
+        if (details.kind() == kData) {
           int index = descriptors->GetFieldIndex(number);
           Representation details_representation = details.representation();
           FieldIndex field_index = FieldIndex::ForPropertyIndex(
@@ -302,7 +305,7 @@ bool AccessInfoFactory::ComputePropertyAccessInfo(
               MachineRepresentation::kTagged;
           MaybeHandle<Map> field_map;
           if (details_representation.IsSmi()) {
-            field_type = type_cache_.kSmi;
+            field_type = Type::SignedSmall();
             field_representation = MachineRepresentation::kTaggedSigned;
           } else if (details_representation.IsDouble()) {
             field_type = type_cache_.kFloat64;
@@ -331,11 +334,25 @@ bool AccessInfoFactory::ComputePropertyAccessInfo(
             }
           }
           *access_info = PropertyAccessInfo::DataField(
-              MapList{receiver_map}, field_index, field_representation,
-              field_type, field_map, holder);
+              details.constness(), MapList{receiver_map}, field_index,
+              field_representation, field_type, field_map, holder);
           return true;
+        } else {
+          DCHECK_EQ(kAccessor, details.kind());
+          // TODO(turbofan): Add support for general accessors?
+          return false;
         }
-        case ACCESSOR_CONSTANT: {
+
+      } else {
+        DCHECK_EQ(kDescriptor, details.location());
+        if (details.kind() == kData) {
+          DCHECK(!FLAG_track_constant_fields);
+          *access_info = PropertyAccessInfo::DataConstant(
+              MapList{receiver_map},
+              handle(descriptors->GetValue(number), isolate()), holder);
+          return true;
+        } else {
+          DCHECK_EQ(kAccessor, details.kind());
           Handle<Object> accessors(descriptors->GetValue(number), isolate());
           if (!accessors->IsAccessorPair()) return false;
           Handle<Object> accessor(
@@ -348,17 +365,22 @@ bool AccessInfoFactory::ComputePropertyAccessInfo(
             if (!optimization.is_simple_api_call()) {
               return false;
             }
-            if (optimization.api_call_info()->fast_handler()->IsCode()) {
-              return false;
+            if (V8_UNLIKELY(FLAG_runtime_stats)) return false;
+          }
+          if (access_mode == AccessMode::kLoad) {
+            Handle<Name> cached_property_name;
+            if (FunctionTemplateInfo::TryGetCachedPropertyName(isolate(),
+                                                               accessor)
+                    .ToHandle(&cached_property_name)) {
+              if (ComputePropertyAccessInfo(map, cached_property_name,
+                                            access_mode, access_info)) {
+                return true;
+              }
             }
           }
           *access_info = PropertyAccessInfo::AccessorConstant(
               MapList{receiver_map}, accessor, holder);
           return true;
-        }
-        case ACCESSOR: {
-          // TODO(turbofan): Add support for general accessors?
-          return false;
         }
       }
       UNREACHABLE();
@@ -370,6 +392,11 @@ bool AccessInfoFactory::ComputePropertyAccessInfo(
     if (map->IsJSTypedArrayMap() && name->IsString() &&
         IsSpecialIndex(isolate()->unicode_cache(), String::cast(*name))) {
       return false;
+    }
+
+    // Don't search on the prototype when storing in literals
+    if (access_mode == AccessMode::kStoreInLiteral) {
+      return LookupTransition(receiver_map, name, holder, access_info);
     }
 
     // Don't lookup private symbols on the prototype chain.
@@ -468,8 +495,9 @@ bool AccessInfoFactory::LookupSpecialFieldAccessor(
         field_type = type_cache_.kJSArrayLengthType;
       }
     }
+    // Special fields are always mutable.
     *access_info = PropertyAccessInfo::DataField(
-        MapList{map}, field_index, field_representation, field_type);
+        kMutable, MapList{map}, field_index, field_representation, field_type);
     return true;
   }
   return false;
@@ -480,7 +508,6 @@ bool AccessInfoFactory::LookupTransition(Handle<Map> map, Handle<Name> name,
                                          MaybeHandle<JSObject> holder,
                                          PropertyAccessInfo* access_info) {
   // Check if the {map} has a data transition with the given {name}.
-  if (map->unused_property_fields() == 0) return false;
   Handle<Map> transition_map;
   if (TransitionArray::SearchTransition(map, kData, name, NONE)
           .ToHandle(&transition_map)) {
@@ -490,7 +517,7 @@ bool AccessInfoFactory::LookupTransition(Handle<Map> map, Handle<Name> name,
     // Don't bother optimizing stores to read-only properties.
     if (details.IsReadOnly()) return false;
     // TODO(bmeurer): Handle transition to data constant?
-    if (details.type() != DATA) return false;
+    if (details.location() != kField) return false;
     int const index = details.field_index();
     Representation details_representation = details.representation();
     FieldIndex field_index = FieldIndex::ForPropertyIndex(
@@ -499,7 +526,7 @@ bool AccessInfoFactory::LookupTransition(Handle<Map> map, Handle<Name> name,
     MaybeHandle<Map> field_map;
     MachineRepresentation field_representation = MachineRepresentation::kTagged;
     if (details_representation.IsSmi()) {
-      field_type = type_cache_.kSmi;
+      field_type = Type::SignedSmall();
       field_representation = MachineRepresentation::kTaggedSigned;
     } else if (details_representation.IsDouble()) {
       field_type = type_cache_.kFloat64;
@@ -526,9 +553,10 @@ bool AccessInfoFactory::LookupTransition(Handle<Map> map, Handle<Name> name,
       }
     }
     dependencies()->AssumeMapNotDeprecated(transition_map);
+    // Transitioning stores are never stores to constant fields.
     *access_info = PropertyAccessInfo::DataField(
-        MapList{map}, field_index, field_representation, field_type, field_map,
-        holder, transition_map);
+        kMutable, MapList{map}, field_index, field_representation, field_type,
+        field_map, holder, transition_map);
     return true;
   }
   return false;

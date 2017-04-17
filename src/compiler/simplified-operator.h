@@ -14,6 +14,7 @@
 #include "src/handles.h"
 #include "src/machine-type.h"
 #include "src/objects.h"
+#include "src/zone/zone-handle-set.h"
 
 namespace v8 {
 namespace internal {
@@ -64,6 +65,7 @@ struct FieldAccess {
   BaseTaggedness base_is_tagged;  // specifies if the base pointer is tagged.
   int offset;                     // offset of the field, without tag.
   MaybeHandle<Name> name;         // debugging only.
+  MaybeHandle<Map> map;           // map of the field value (if known).
   Type* type;                     // type of the field.
   MachineType machine_type;       // machine type of the field.
   WriteBarrierKind write_barrier_kind;  // write barrier hint.
@@ -143,6 +145,41 @@ std::ostream& operator<<(std::ostream&, CheckForMinusZeroMode);
 
 CheckForMinusZeroMode CheckMinusZeroModeOf(const Operator*) WARN_UNUSED_RESULT;
 
+// Flags for map checks.
+enum class CheckMapsFlag : uint8_t {
+  kNone = 0u,
+  kTryMigrateInstance = 1u << 0,  // Try instance migration.
+};
+typedef base::Flags<CheckMapsFlag> CheckMapsFlags;
+
+DEFINE_OPERATORS_FOR_FLAGS(CheckMapsFlags)
+
+std::ostream& operator<<(std::ostream&, CheckMapsFlags);
+
+// A descriptor for map checks.
+class CheckMapsParameters final {
+ public:
+  CheckMapsParameters(CheckMapsFlags flags, ZoneHandleSet<Map> const& maps)
+      : flags_(flags), maps_(maps) {}
+
+  CheckMapsFlags flags() const { return flags_; }
+  ZoneHandleSet<Map> const& maps() const { return maps_; }
+
+ private:
+  CheckMapsFlags const flags_;
+  ZoneHandleSet<Map> const maps_;
+};
+
+bool operator==(CheckMapsParameters const&, CheckMapsParameters const&);
+bool operator!=(CheckMapsParameters const&, CheckMapsParameters const&);
+
+size_t hash_value(CheckMapsParameters const&);
+
+std::ostream& operator<<(std::ostream&, CheckMapsParameters const&);
+
+CheckMapsParameters const& CheckMapsParametersOf(Operator const*)
+    WARN_UNUSED_RESULT;
+
 // A descriptor for growing elements backing stores.
 enum class GrowFastElementsFlag : uint8_t {
   kNone = 0u,
@@ -160,16 +197,35 @@ GrowFastElementsFlags GrowFastElementsFlagsOf(const Operator*)
     WARN_UNUSED_RESULT;
 
 // A descriptor for elements kind transitions.
-enum class ElementsTransition : uint8_t {
-  kFastTransition,  // simple transition, just updating the map.
-  kSlowTransition   // full transition, round-trip to the runtime.
+class ElementsTransition final {
+ public:
+  enum Mode : uint8_t {
+    kFastTransition,  // simple transition, just updating the map.
+    kSlowTransition   // full transition, round-trip to the runtime.
+  };
+
+  ElementsTransition(Mode mode, Handle<Map> source, Handle<Map> target)
+      : mode_(mode), source_(source), target_(target) {}
+
+  Mode mode() const { return mode_; }
+  Handle<Map> source() const { return source_; }
+  Handle<Map> target() const { return target_; }
+
+ private:
+  Mode const mode_;
+  Handle<Map> const source_;
+  Handle<Map> const target_;
 };
+
+bool operator==(ElementsTransition const&, ElementsTransition const&);
+bool operator!=(ElementsTransition const&, ElementsTransition const&);
 
 size_t hash_value(ElementsTransition);
 
 std::ostream& operator<<(std::ostream&, ElementsTransition);
 
-ElementsTransition ElementsTransitionOf(const Operator* op) WARN_UNUSED_RESULT;
+ElementsTransition const& ElementsTransitionOf(const Operator* op)
+    WARN_UNUSED_RESULT;
 
 // A hint for speculative number operations.
 enum class NumberOperationHint : uint8_t {
@@ -186,7 +242,32 @@ V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&, NumberOperationHint);
 NumberOperationHint NumberOperationHintOf(const Operator* op)
     WARN_UNUSED_RESULT;
 
+int FormalParameterCountOf(const Operator* op) WARN_UNUSED_RESULT;
+bool IsRestLengthOf(const Operator* op) WARN_UNUSED_RESULT;
+
+class AllocateParameters {
+ public:
+  AllocateParameters(Type* type, PretenureFlag pretenure)
+      : type_(type), pretenure_(pretenure) {}
+
+  Type* type() const { return type_; }
+  PretenureFlag pretenure() const { return pretenure_; }
+
+ private:
+  Type* type_;
+  PretenureFlag pretenure_;
+};
+
+size_t hash_value(AllocateParameters);
+
+V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&, AllocateParameters);
+
+bool operator==(AllocateParameters const&, AllocateParameters const&);
+bool operator!=(AllocateParameters const&, AllocateParameters const&);
+
 PretenureFlag PretenureFlagOf(const Operator* op) WARN_UNUSED_RESULT;
+
+Type* AllocateTypeOf(const Operator* op) WARN_UNUSED_RESULT;
 
 UnicodeEncoding UnicodeEncodingOf(const Operator*) WARN_UNUSED_RESULT;
 
@@ -269,6 +350,7 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* NumberToBoolean();
   const Operator* NumberToInt32();
   const Operator* NumberToUint32();
+  const Operator* NumberToUint8Clamped();
 
   const Operator* NumberSilenceNaN();
 
@@ -293,9 +375,13 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* StringEqual();
   const Operator* StringLessThan();
   const Operator* StringLessThanOrEqual();
+  const Operator* StringCharAt();
   const Operator* StringCharCodeAt();
   const Operator* StringFromCharCode();
   const Operator* StringFromCodePoint(UnicodeEncoding encoding);
+  const Operator* StringIndexOf();
+
+  const Operator* SpeculativeToNumber(NumberOperationHint hint);
 
   const Operator* PlainPrimitiveToNumber();
   const Operator* PlainPrimitiveToWord32();
@@ -305,25 +391,29 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* ChangeTaggedToInt32();
   const Operator* ChangeTaggedToUint32();
   const Operator* ChangeTaggedToFloat64();
+  const Operator* ChangeTaggedToTaggedSigned();
   const Operator* ChangeInt31ToTaggedSigned();
   const Operator* ChangeInt32ToTagged();
   const Operator* ChangeUint32ToTagged();
-  const Operator* ChangeFloat64ToTagged();
+  const Operator* ChangeFloat64ToTagged(CheckForMinusZeroMode);
   const Operator* ChangeFloat64ToTaggedPointer();
   const Operator* ChangeTaggedToBit();
   const Operator* ChangeBitToTagged();
   const Operator* TruncateTaggedToWord32();
   const Operator* TruncateTaggedToFloat64();
   const Operator* TruncateTaggedToBit();
+  const Operator* TruncateTaggedPointerToBit();
 
   const Operator* CheckIf();
   const Operator* CheckBounds();
-  const Operator* CheckMaps(int map_input_count);
+  const Operator* CheckMaps(CheckMapsFlags, ZoneHandleSet<Map>);
 
   const Operator* CheckHeapObject();
+  const Operator* CheckInternalizedString();
   const Operator* CheckNumber();
   const Operator* CheckSmi();
   const Operator* CheckString();
+  const Operator* CheckReceiver();
 
   const Operator* CheckedInt32Add();
   const Operator* CheckedInt32Sub();
@@ -347,12 +437,22 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* CheckTaggedHole();
   const Operator* ConvertTaggedHoleToUndefined();
 
-  const Operator* ObjectIsCallable();
+  const Operator* ObjectIsDetectableCallable();
+  const Operator* ObjectIsNaN();
+  const Operator* ObjectIsNonCallable();
   const Operator* ObjectIsNumber();
   const Operator* ObjectIsReceiver();
   const Operator* ObjectIsSmi();
   const Operator* ObjectIsString();
+  const Operator* ObjectIsSymbol();
   const Operator* ObjectIsUndetectable();
+
+  const Operator* ArgumentsFrame();
+  const Operator* ArgumentsLength(int formal_parameter_count,
+                                  bool is_rest_length);
+
+  // new-unmapped-arguments-elements
+  const Operator* NewUnmappedArgumentsElements();
 
   // array-buffer-was-neutered buffer
   const Operator* ArrayBufferWasNeutered();
@@ -366,7 +466,7 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   // transition-elements-kind object, from-map, to-map
   const Operator* TransitionElementsKind(ElementsTransition transition);
 
-  const Operator* Allocate(PretenureFlag pretenure = NOT_TENURED);
+  const Operator* Allocate(Type* type, PretenureFlag pretenure = NOT_TENURED);
 
   const Operator* LoadField(FieldAccess const&);
   const Operator* StoreField(FieldAccess const&);

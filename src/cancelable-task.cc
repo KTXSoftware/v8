@@ -44,7 +44,7 @@ void CancelableTaskManager::RemoveFinishedTask(uint32_t id) {
   base::LockGuard<base::Mutex> guard(&mutex_);
   size_t removed = cancelable_tasks_.erase(id);
   USE(removed);
-  DCHECK_NE(0, removed);
+  DCHECK_NE(0u, removed);
   cancelable_tasks_barrier_.NotifyOne();
 }
 
@@ -93,13 +93,36 @@ void CancelableTaskManager::CancelAndWait() {
   }
 }
 
+CancelableTaskManager::TryAbortResult CancelableTaskManager::TryAbortAll() {
+  // Clean up all cancelable fore- and background tasks. Tasks are canceled on
+  // the way if possible, i.e., if they have not started yet.
+  base::LockGuard<base::Mutex> guard(&mutex_);
+
+  if (cancelable_tasks_.empty()) return kTaskRemoved;
+
+  for (auto it = cancelable_tasks_.begin(); it != cancelable_tasks_.end();) {
+    if (it->second->Cancel()) {
+      it = cancelable_tasks_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  return cancelable_tasks_.empty() ? kTaskAborted : kTaskRunning;
+}
 
 CancelableTask::CancelableTask(Isolate* isolate)
-    : Cancelable(isolate->cancelable_task_manager()), isolate_(isolate) {}
+    : CancelableTask(isolate, isolate->cancelable_task_manager()) {}
 
+CancelableTask::CancelableTask(Isolate* isolate, CancelableTaskManager* manager)
+    : Cancelable(manager), isolate_(isolate) {}
 
 CancelableIdleTask::CancelableIdleTask(Isolate* isolate)
-    : Cancelable(isolate->cancelable_task_manager()), isolate_(isolate) {}
+    : CancelableIdleTask(isolate, isolate->cancelable_task_manager()) {}
+
+CancelableIdleTask::CancelableIdleTask(Isolate* isolate,
+                                       CancelableTaskManager* manager)
+    : Cancelable(manager), isolate_(isolate) {}
 
 }  // namespace internal
 }  // namespace v8

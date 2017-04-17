@@ -21,6 +21,8 @@ class InspectedContext {
  public:
   ~InspectedContext();
 
+  static int contextId(v8::Local<v8::Context>);
+
   v8::Local<v8::Context> context() const;
   int contextId() const { return m_contextId; }
   int contextGroupId() const { return m_contextGroupId; }
@@ -51,7 +53,6 @@ class InspectedContext {
   const String16 m_auxData;
   bool m_reported;
   std::unique_ptr<InjectedScript> m_injectedScript;
-  v8::Global<v8::Object> m_console;
 
   DISALLOW_COPY_AND_ASSIGN(InspectedContext);
 };

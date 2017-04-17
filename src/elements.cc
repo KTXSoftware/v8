@@ -185,14 +185,15 @@ static void CopyDictionaryToObjectElements(
   WriteBarrierMode write_barrier_mode = IsFastObjectElementsKind(to_kind)
                                             ? UPDATE_WRITE_BARRIER
                                             : SKIP_WRITE_BARRIER;
+  Isolate* isolate = from->GetIsolate();
   for (int i = 0; i < copy_size; i++) {
-    int entry = from->FindEntry(i + from_start);
+    int entry = from->FindEntry(isolate, i + from_start);
     if (entry != SeededNumberDictionary::kNotFound) {
       Object* value = from->ValueAt(entry);
-      DCHECK(!value->IsTheHole(from->GetIsolate()));
+      DCHECK(!value->IsTheHole(isolate));
       to->set(i + to_start, value, write_barrier_mode);
     } else {
-      to->set_the_hole(i + to_start);
+      to->set_the_hole(isolate, i + to_start);
     }
   }
 }
@@ -416,8 +417,9 @@ static void CopyDictionaryToDoubleElements(FixedArrayBase* from_base,
   if (to_start + copy_size > to_length) {
     copy_size = to_length - to_start;
   }
+  Isolate* isolate = from->GetIsolate();
   for (int i = 0; i < copy_size; i++) {
-    int entry = from->FindEntry(i + from_start);
+    int entry = from->FindEntry(isolate, i + from_start);
     if (entry != SeededNumberDictionary::kNotFound) {
       to->set(i + to_start, from->ValueAt(entry)->Number());
     } else {
@@ -562,12 +564,14 @@ class ElementsAccessorBase : public ElementsAccessor {
     Subclass::ValidateImpl(holder);
   }
 
-  static bool IsPackedImpl(Handle<JSObject> holder,
-                           Handle<FixedArrayBase> backing_store, uint32_t start,
-                           uint32_t end) {
+  static bool IsPackedImpl(JSObject* holder, FixedArrayBase* backing_store,
+                           uint32_t start, uint32_t end) {
+    DisallowHeapAllocation no_gc;
     if (IsFastPackedElementsKind(kind())) return true;
+    Isolate* isolate = backing_store->GetIsolate();
     for (uint32_t i = start; i < end; i++) {
-      if (!Subclass::HasElementImpl(holder, i, backing_store, ALL_PROPERTIES)) {
+      if (!Subclass::HasElementImpl(isolate, holder, i, backing_store,
+                                    ALL_PROPERTIES)) {
         return false;
       }
     }
@@ -576,9 +580,9 @@ class ElementsAccessorBase : public ElementsAccessor {
 
   static void TryTransitionResultArrayToPacked(Handle<JSArray> array) {
     if (!IsHoleyElementsKind(kind())) return;
-    int length = Smi::cast(array->length())->value();
     Handle<FixedArrayBase> backing_store(array->elements());
-    if (!Subclass::IsPackedImpl(array, backing_store, 0, length)) {
+    int length = Smi::cast(array->length())->value();
+    if (!Subclass::IsPackedImpl(*array, *backing_store, 0, length)) {
       return;
     }
     ElementsKind packed_kind = GetPackedElementsKind(kind());
@@ -591,16 +595,16 @@ class ElementsAccessorBase : public ElementsAccessor {
     }
   }
 
-  bool HasElement(Handle<JSObject> holder, uint32_t index,
-                  Handle<FixedArrayBase> backing_store,
-                  PropertyFilter filter) final {
-    return Subclass::HasElementImpl(holder, index, backing_store, filter);
+  bool HasElement(JSObject* holder, uint32_t index,
+                  FixedArrayBase* backing_store, PropertyFilter filter) final {
+    return Subclass::HasElementImpl(holder->GetIsolate(), holder, index,
+                                    backing_store, filter);
   }
 
-  static bool HasElementImpl(Handle<JSObject> holder, uint32_t index,
-                             Handle<FixedArrayBase> backing_store,
-                             PropertyFilter filter) {
-    return Subclass::GetEntryForIndexImpl(*holder, *backing_store, index,
+  static bool HasElementImpl(Isolate* isolate, JSObject* holder, uint32_t index,
+                             FixedArrayBase* backing_store,
+                             PropertyFilter filter = ALL_PROPERTIES) {
+    return Subclass::GetEntryForIndexImpl(isolate, holder, backing_store, index,
                                           filter) != kMaxUInt32;
   }
 
@@ -614,15 +618,16 @@ class ElementsAccessorBase : public ElementsAccessor {
   }
 
   Handle<Object> Get(Handle<JSObject> holder, uint32_t entry) final {
-    return Subclass::GetImpl(holder, entry);
+    return Subclass::GetInternalImpl(holder, entry);
   }
 
-  static Handle<Object> GetImpl(Handle<JSObject> holder, uint32_t entry) {
-    return Subclass::GetImpl(holder->elements(), entry);
+  static Handle<Object> GetInternalImpl(Handle<JSObject> holder,
+                                        uint32_t entry) {
+    return Subclass::GetImpl(holder->GetIsolate(), holder->elements(), entry);
   }
 
-  static Handle<Object> GetImpl(FixedArrayBase* backing_store, uint32_t entry) {
-    Isolate* isolate = backing_store->GetIsolate();
+  static Handle<Object> GetImpl(Isolate* isolate, FixedArrayBase* backing_store,
+                                uint32_t entry) {
     uint32_t index = GetIndexForEntryImpl(backing_store, entry);
     return handle(BackingStore::cast(backing_store)->get(index), isolate);
   }
@@ -677,15 +682,27 @@ class ElementsAccessorBase : public ElementsAccessor {
     return 0;
   }
 
-  Handle<JSArray> Slice(Handle<JSObject> receiver, uint32_t start,
-                        uint32_t end) final {
+  Handle<JSObject> Slice(Handle<JSObject> receiver, uint32_t start,
+                         uint32_t end) final {
     return Subclass::SliceImpl(receiver, start, end);
   }
 
-  static Handle<JSArray> SliceImpl(Handle<JSObject> receiver,
-                                   uint32_t start, uint32_t end) {
+  Handle<JSObject> Slice(Handle<JSObject> receiver, uint32_t start,
+                         uint32_t end, Handle<JSObject> result) final {
+    return Subclass::SliceWithResultImpl(receiver, start, end, result);
+  }
+
+  static Handle<JSObject> SliceImpl(Handle<JSObject> receiver, uint32_t start,
+                                    uint32_t end) {
     UNREACHABLE();
-    return Handle<JSArray>();
+    return Handle<JSObject>();
+  }
+
+  static Handle<JSObject> SliceWithResultImpl(Handle<JSObject> receiver,
+                                              uint32_t start, uint32_t end,
+                                              Handle<JSObject> result) {
+    UNREACHABLE();
+    return Handle<JSObject>();
   }
 
   Handle<JSArray> Splice(Handle<JSArray> receiver, uint32_t start,
@@ -754,13 +771,10 @@ class ElementsAccessorBase : public ElementsAccessor {
       }
       if (2 * length <= capacity) {
         // If more than half the elements won't be used, trim the array.
-        isolate->heap()->RightTrimFixedArray<Heap::CONCURRENT_TO_SWEEPER>(
-            *backing_store, capacity - length);
+        isolate->heap()->RightTrimFixedArray(*backing_store, capacity - length);
       } else {
         // Otherwise, fill the unused tail with holes.
-        for (uint32_t i = length; i < old_length; i++) {
-          BackingStore::cast(*backing_store)->set_the_hole(i);
-        }
+        BackingStore::cast(*backing_store)->FillWithHoles(length, old_length);
       }
     } else {
       // Check whether the backing store should be expanded.
@@ -770,6 +784,15 @@ class ElementsAccessorBase : public ElementsAccessor {
 
     array->set_length(Smi::FromInt(length));
     JSObject::ValidateElements(array);
+  }
+
+  uint32_t NumberOfElements(JSObject* receiver) final {
+    return Subclass::NumberOfElementsImpl(receiver, receiver->elements());
+  }
+
+  static uint32_t NumberOfElementsImpl(JSObject* receiver,
+                                       FixedArrayBase* backing_store) {
+    UNREACHABLE();
   }
 
   static uint32_t GetMaxIndex(JSObject* receiver, FixedArrayBase* elements) {
@@ -973,6 +996,12 @@ class ElementsAccessorBase : public ElementsAccessor {
                                packed_size, copy_size);
   }
 
+  void CopyElements(Handle<FixedArrayBase> source, ElementsKind source_kind,
+                    Handle<FixedArrayBase> destination, int size) {
+    Subclass::CopyElementsImpl(*source, 0, *destination, source_kind, 0,
+                               kPackedSizeNotKnown, size);
+  }
+
   Handle<SeededNumberDictionary> Normalize(Handle<JSObject> object) final {
     return Subclass::NormalizeImpl(object, handle(object->elements()));
   }
@@ -1009,13 +1038,13 @@ class ElementsAccessorBase : public ElementsAccessor {
       if (!key->ToUint32(&index)) continue;
 
       uint32_t entry = Subclass::GetEntryForIndexImpl(
-          *object, object->elements(), index, filter);
+          isolate, *object, object->elements(), index, filter);
       if (entry == kMaxUInt32) continue;
 
       PropertyDetails details = Subclass::GetDetailsImpl(*object, entry);
 
       if (details.kind() == kData) {
-        value = Subclass::GetImpl(object, entry);
+        value = Subclass::GetImpl(isolate, object->elements(), entry);
       } else {
         LookupIterator it(isolate, object, index, LookupIterator::OWN);
         ASSIGN_RETURN_ON_EXCEPTION_VALUE(
@@ -1045,9 +1074,11 @@ class ElementsAccessorBase : public ElementsAccessor {
     // Non-dictionary elements can't have all-can-read accessors.
     uint32_t length = Subclass::GetMaxIndex(*object, *backing_store);
     PropertyFilter filter = keys->filter();
-    Factory* factory = keys->isolate()->factory();
+    Isolate* isolate = keys->isolate();
+    Factory* factory = isolate->factory();
     for (uint32_t i = 0; i < length; i++) {
-      if (Subclass::HasElementImpl(object, i, backing_store, filter)) {
+      if (Subclass::HasElementImpl(isolate, *object, i, *backing_store,
+                                   filter)) {
         keys->AddKey(factory->NewNumberFromUint(i));
       }
     }
@@ -1060,7 +1091,8 @@ class ElementsAccessorBase : public ElementsAccessor {
       uint32_t insertion_index = 0) {
     uint32_t length = Subclass::GetMaxIndex(*object, *backing_store);
     for (uint32_t i = 0; i < length; i++) {
-      if (Subclass::HasElementImpl(object, i, backing_store, filter)) {
+      if (Subclass::HasElementImpl(isolate, *object, i, *backing_store,
+                                   filter)) {
         if (convert == GetKeysConversion::kConvertToString) {
           Handle<String> index_string = isolate->factory()->Uint32ToString(i);
           list->set(insertion_index, *index_string);
@@ -1090,6 +1122,7 @@ class ElementsAccessorBase : public ElementsAccessor {
     uint32_t nof_property_keys = keys->length();
     uint32_t initial_list_length =
         Subclass::GetMaxNumberOfEntries(*object, *backing_store);
+
     initial_list_length += nof_property_keys;
     if (initial_list_length > FixedArray::kMaxLength ||
         initial_list_length < nof_property_keys) {
@@ -1097,13 +1130,30 @@ class ElementsAccessorBase : public ElementsAccessor {
           MessageTemplate::kInvalidArrayLength));
     }
 
-    bool needs_sorting =
-        IsDictionaryElementsKind(kind()) || IsSloppyArgumentsElements(kind());
-
     // Collect the element indices into a new list.
+    MaybeHandle<FixedArray> raw_array =
+        isolate->factory()->TryNewFixedArray(initial_list_length);
+    Handle<FixedArray> combined_keys;
+
+    // If we have a holey backing store try to precisely estimate the backing
+    // store size as a last emergency measure if we cannot allocate the big
+    // array.
+    if (!raw_array.ToHandle(&combined_keys)) {
+      if (IsHoleyElementsKind(kind())) {
+        // If we overestimate the result list size we might end up in the
+        // large-object space which doesn't free memory on shrinking the list.
+        // Hence we try to estimate the final size for holey backing stores more
+        // precisely here.
+        initial_list_length =
+            Subclass::NumberOfElementsImpl(*object, *backing_store);
+        initial_list_length += nof_property_keys;
+      }
+      combined_keys = isolate->factory()->NewFixedArray(initial_list_length);
+    }
+
     uint32_t nof_indices = 0;
-    Handle<FixedArray> combined_keys =
-        isolate->factory()->NewFixedArray(initial_list_length);
+    bool needs_sorting = IsDictionaryElementsKind(kind()) ||
+                         IsSloppyArgumentsElementsKind(kind());
     combined_keys = Subclass::DirectCollectElementIndicesImpl(
         isolate, object, backing_store,
         needs_sorting ? GetKeysConversion::kKeepNumbers : convert, filter,
@@ -1128,7 +1178,7 @@ class ElementsAccessorBase : public ElementsAccessor {
 
     // For holey elements and arguments we might have to shrink the collected
     // keys since the estimates might be off.
-    if (IsHoleyElementsKind(kind()) || IsSloppyArgumentsElements(kind())) {
+    if (IsHoleyElementsKind(kind()) || IsSloppyArgumentsElementsKind(kind())) {
       // Shrink combined_keys to the final size.
       int final_size = nof_indices + nof_property_keys;
       DCHECK_LE(final_size, combined_keys->length());
@@ -1151,6 +1201,18 @@ class ElementsAccessorBase : public ElementsAccessor {
 
   uint32_t GetCapacity(JSObject* holder, FixedArrayBase* backing_store) final {
     return Subclass::GetCapacityImpl(holder, backing_store);
+  }
+
+  static Object* FillImpl(Isolate* isolate, Handle<JSObject> receiver,
+                          Handle<Object> obj_value, uint32_t start,
+                          uint32_t end) {
+    UNREACHABLE();
+    return *receiver;
+  }
+
+  Object* Fill(Isolate* isolate, Handle<JSObject> receiver,
+               Handle<Object> obj_value, uint32_t start, uint32_t end) {
+    return Subclass::FillImpl(isolate, receiver, obj_value, start, end);
   }
 
   static Maybe<bool> IncludesValueImpl(Isolate* isolate,
@@ -1181,18 +1243,37 @@ class ElementsAccessorBase : public ElementsAccessor {
                                       length);
   }
 
+  static Maybe<int64_t> LastIndexOfValueImpl(Isolate* isolate,
+                                             Handle<JSObject> receiver,
+                                             Handle<Object> value,
+                                             uint32_t start_from) {
+    UNREACHABLE();
+    return Just<int64_t>(-1);
+  }
+
+  Maybe<int64_t> LastIndexOfValue(Isolate* isolate, Handle<JSObject> receiver,
+                                  Handle<Object> value,
+                                  uint32_t start_from) final {
+    return Subclass::LastIndexOfValueImpl(isolate, receiver, value, start_from);
+  }
+
+  static void ReverseImpl(JSObject* receiver) { UNREACHABLE(); }
+
+  void Reverse(JSObject* receiver) final { Subclass::ReverseImpl(receiver); }
+
   static uint32_t GetIndexForEntryImpl(FixedArrayBase* backing_store,
                                        uint32_t entry) {
     return entry;
   }
 
-  static uint32_t GetEntryForIndexImpl(JSObject* holder,
+  static uint32_t GetEntryForIndexImpl(Isolate* isolate, JSObject* holder,
                                        FixedArrayBase* backing_store,
                                        uint32_t index, PropertyFilter filter) {
     uint32_t length = Subclass::GetMaxIndex(holder, backing_store);
     if (IsHoleyElementsKind(kind())) {
       return index < length &&
-                     !BackingStore::cast(backing_store)->is_the_hole(index)
+                     !BackingStore::cast(backing_store)
+                          ->is_the_hole(isolate, index)
                  ? index
                  : kMaxUInt32;
     } else {
@@ -1200,23 +1281,35 @@ class ElementsAccessorBase : public ElementsAccessor {
     }
   }
 
-  uint32_t GetEntryForIndex(JSObject* holder, FixedArrayBase* backing_store,
+  uint32_t GetEntryForIndex(Isolate* isolate, JSObject* holder,
+                            FixedArrayBase* backing_store,
                             uint32_t index) final {
-    return Subclass::GetEntryForIndexImpl(holder, backing_store, index,
+    return Subclass::GetEntryForIndexImpl(isolate, holder, backing_store, index,
                                           ALL_PROPERTIES);
   }
 
   static PropertyDetails GetDetailsImpl(FixedArrayBase* backing_store,
                                         uint32_t entry) {
-    return PropertyDetails(NONE, DATA, 0, PropertyCellType::kNoCell);
+    return PropertyDetails(kData, NONE, 0, PropertyCellType::kNoCell);
   }
 
   static PropertyDetails GetDetailsImpl(JSObject* holder, uint32_t entry) {
-    return PropertyDetails(NONE, DATA, 0, PropertyCellType::kNoCell);
+    return PropertyDetails(kData, NONE, 0, PropertyCellType::kNoCell);
   }
 
   PropertyDetails GetDetails(JSObject* holder, uint32_t entry) final {
     return Subclass::GetDetailsImpl(holder, entry);
+  }
+
+  Handle<FixedArray> CreateListFromArray(Isolate* isolate,
+                                         Handle<JSArray> array) final {
+    return Subclass::CreateListFromArrayImpl(isolate, array);
+  };
+
+  static Handle<FixedArray> CreateListFromArrayImpl(Isolate* isolate,
+                                                    Handle<JSArray> array) {
+    UNREACHABLE();
+    return Handle<FixedArray>();
   }
 
  private:
@@ -1239,6 +1332,11 @@ class DictionaryElementsAccessor
 
   static uint32_t GetMaxNumberOfEntries(JSObject* receiver,
                                         FixedArrayBase* backing_store) {
+    return NumberOfElementsImpl(receiver, backing_store);
+  }
+
+  static uint32_t NumberOfElementsImpl(JSObject* receiver,
+                                       FixedArrayBase* backing_store) {
     SeededNumberDictionary* dict = SeededNumberDictionary::cast(backing_store);
     return dict->NumberOfElements();
   }
@@ -1329,7 +1427,7 @@ class DictionaryElementsAccessor
       if (!dict->IsKey(isolate, key)) continue;
       DCHECK(!dict->IsDeleted(i));
       PropertyDetails details = dict->DetailsAt(i);
-      if (details.type() == ACCESSOR_CONSTANT) return true;
+      if (details.kind() == kAccessor) return true;
     }
     return false;
   }
@@ -1339,12 +1437,9 @@ class DictionaryElementsAccessor
     return backing_store->ValueAt(entry);
   }
 
-  static Handle<Object> GetImpl(Handle<JSObject> holder, uint32_t entry) {
-    return GetImpl(holder->elements(), entry);
-  }
-
-  static Handle<Object> GetImpl(FixedArrayBase* backing_store, uint32_t entry) {
-    return handle(GetRaw(backing_store, entry), backing_store->GetIsolate());
+  static Handle<Object> GetImpl(Isolate* isolate, FixedArrayBase* backing_store,
+                                uint32_t entry) {
+    return handle(GetRaw(backing_store, entry), isolate);
   }
 
   static inline void SetImpl(Handle<JSObject> holder, uint32_t entry,
@@ -1365,7 +1460,7 @@ class DictionaryElementsAccessor
     if (attributes != NONE) object->RequireSlowElements(dictionary);
     dictionary->ValueAtPut(entry, *value);
     PropertyDetails details = dictionary->DetailsAt(entry);
-    details = PropertyDetails(attributes, DATA, details.dictionary_index(),
+    details = PropertyDetails(kData, attributes, details.dictionary_index(),
                               PropertyCellType::kNoCell);
     dictionary->DetailsAtPut(entry, details);
   }
@@ -1373,25 +1468,25 @@ class DictionaryElementsAccessor
   static void AddImpl(Handle<JSObject> object, uint32_t index,
                       Handle<Object> value, PropertyAttributes attributes,
                       uint32_t new_capacity) {
-    PropertyDetails details(attributes, DATA, 0, PropertyCellType::kNoCell);
+    PropertyDetails details(kData, attributes, 0, PropertyCellType::kNoCell);
     Handle<SeededNumberDictionary> dictionary =
         object->HasFastElements() || object->HasFastStringWrapperElements()
             ? JSObject::NormalizeElements(object)
             : handle(SeededNumberDictionary::cast(object->elements()));
     Handle<SeededNumberDictionary> new_dictionary =
-        SeededNumberDictionary::AddNumberEntry(
-            dictionary, index, value, details,
-            object->map()->is_prototype_map());
+        SeededNumberDictionary::AddNumberEntry(dictionary, index, value,
+                                               details, object);
     if (attributes != NONE) object->RequireSlowElements(*new_dictionary);
     if (dictionary.is_identical_to(new_dictionary)) return;
     object->set_elements(*new_dictionary);
   }
 
-  static bool HasEntryImpl(FixedArrayBase* store, uint32_t entry) {
+  static bool HasEntryImpl(Isolate* isolate, FixedArrayBase* store,
+                           uint32_t entry) {
     DisallowHeapAllocation no_gc;
     SeededNumberDictionary* dict = SeededNumberDictionary::cast(store);
     Object* index = dict->KeyAt(entry);
-    return !index->IsTheHole(dict->GetIsolate());
+    return !index->IsTheHole(isolate);
   }
 
   static uint32_t GetIndexForEntryImpl(FixedArrayBase* store, uint32_t entry) {
@@ -1402,11 +1497,12 @@ class DictionaryElementsAccessor
     return result;
   }
 
-  static uint32_t GetEntryForIndexImpl(JSObject* holder, FixedArrayBase* store,
-                                       uint32_t index, PropertyFilter filter) {
+  static uint32_t GetEntryForIndexImpl(Isolate* isolate, JSObject* holder,
+                                       FixedArrayBase* store, uint32_t index,
+                                       PropertyFilter filter) {
     DisallowHeapAllocation no_gc;
     SeededNumberDictionary* dictionary = SeededNumberDictionary::cast(store);
-    int entry = dictionary->FindEntry(index);
+    int entry = dictionary->FindEntry(isolate, index);
     if (entry == SeededNumberDictionary::kNotFound) return kMaxUInt32;
     if (filter != ALL_PROPERTIES) {
       PropertyDetails details = dictionary->DetailsAt(entry);
@@ -1502,8 +1598,8 @@ class DictionaryElementsAccessor
     Isolate* isolate = accumulator->isolate();
     Handle<Object> undefined = isolate->factory()->undefined_value();
     Handle<Object> the_hole = isolate->factory()->the_hole_value();
-    SeededNumberDictionary* dictionary =
-        SeededNumberDictionary::cast(receiver->elements());
+    Handle<SeededNumberDictionary> dictionary(
+        SeededNumberDictionary::cast(receiver->elements()), isolate);
     int capacity = dictionary->Capacity();
     for (int i = 0; i < capacity; i++) {
       Object* k = dictionary->KeyAt(i);
@@ -1541,7 +1637,7 @@ class DictionaryElementsAccessor
         continue;
       }
 
-      if (dictionary->DetailsAt(i).type() == ACCESSOR_CONSTANT) {
+      if (dictionary->DetailsAt(i).kind() == kAccessor) {
         // Restart from beginning in slow path, otherwise we may observably
         // access getters out of order
         return false;
@@ -1575,7 +1671,7 @@ class DictionaryElementsAccessor
     // Iterate through entire range, as accessing elements out of order is
     // observable
     for (uint32_t k = start_from; k < length; ++k) {
-      int entry = dictionary->FindEntry(k);
+      int entry = dictionary->FindEntry(isolate, k);
       if (entry == SeededNumberDictionary::kNotFound) {
         if (search_for_hole) return Just(true);
         continue;
@@ -1641,7 +1737,7 @@ class DictionaryElementsAccessor
     // Iterate through entire range, as accessing elements out of order is
     // observable.
     for (uint32_t k = start_from; k < length; ++k) {
-      int entry = dictionary->FindEntry(k);
+      int entry = dictionary->FindEntry(isolate, k);
       if (entry == SeededNumberDictionary::kNotFound) {
         continue;
       }
@@ -1719,15 +1815,14 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
         SeededNumberDictionary::New(isolate, capacity);
 
     PropertyDetails details = PropertyDetails::Empty();
-    bool used_as_prototype = object->map()->is_prototype_map();
     int j = 0;
     for (int i = 0; j < capacity; i++) {
       if (IsHoleyElementsKind(kind)) {
-        if (BackingStore::cast(*store)->is_the_hole(i)) continue;
+        if (BackingStore::cast(*store)->is_the_hole(isolate, i)) continue;
       }
-      Handle<Object> value = Subclass::GetImpl(*store, i);
-      dictionary = SeededNumberDictionary::AddNumberEntry(
-          dictionary, i, value, details, used_as_prototype);
+      Handle<Object> value = Subclass::GetImpl(isolate, *store, i);
+      dictionary = SeededNumberDictionary::AddNumberEntry(dictionary, i, value,
+                                                          details, object);
       j++;
     }
     return dictionary;
@@ -1736,24 +1831,23 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
   static void DeleteAtEnd(Handle<JSObject> obj,
                           Handle<BackingStore> backing_store, uint32_t entry) {
     uint32_t length = static_cast<uint32_t>(backing_store->length());
-    Heap* heap = obj->GetHeap();
+    Isolate* isolate = obj->GetIsolate();
     for (; entry > 0; entry--) {
-      if (!backing_store->is_the_hole(entry - 1)) break;
+      if (!backing_store->is_the_hole(isolate, entry - 1)) break;
     }
     if (entry == 0) {
-      FixedArray* empty = heap->empty_fixed_array();
+      FixedArray* empty = isolate->heap()->empty_fixed_array();
       // Dynamically ask for the elements kind here since we manually redirect
       // the operations for argument backing stores.
       if (obj->GetElementsKind() == FAST_SLOPPY_ARGUMENTS_ELEMENTS) {
-        FixedArray::cast(obj->elements())->set(1, empty);
+        SloppyArgumentsElements::cast(obj->elements())->set_arguments(empty);
       } else {
         obj->set_elements(empty);
       }
       return;
     }
 
-    heap->RightTrimFixedArray<Heap::CONCURRENT_TO_SWEEPER>(*backing_store,
-                                                           length - entry);
+    isolate->heap()->RightTrimFixedArray(*backing_store, length - entry);
   }
 
   static void DeleteCommon(Handle<JSObject> obj, uint32_t entry,
@@ -1768,7 +1862,8 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
       return;
     }
 
-    backing_store->set_the_hole(entry);
+    Isolate* isolate = obj->GetIsolate();
+    backing_store->set_the_hole(isolate, entry);
 
     // TODO(verwaest): Move this out of elements.cc.
     // If an old space backing store is larger than a certain size and
@@ -1784,12 +1879,13 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
     } else {
       length = static_cast<uint32_t>(store->length());
     }
-    if ((entry > 0 && backing_store->is_the_hole(entry - 1)) ||
-        (entry + 1 < length && backing_store->is_the_hole(entry + 1))) {
+    if ((entry > 0 && backing_store->is_the_hole(isolate, entry - 1)) ||
+        (entry + 1 < length &&
+         backing_store->is_the_hole(isolate, entry + 1))) {
       if (!obj->IsJSArray()) {
         uint32_t i;
         for (i = entry + 1; i < length; i++) {
-          if (!backing_store->is_the_hole(i)) break;
+          if (!backing_store->is_the_hole(isolate, i)) break;
         }
         if (i == length) {
           DeleteAtEnd(obj, backing_store, entry);
@@ -1798,7 +1894,7 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
       }
       int num_used = 0;
       for (int i = 0; i < backing_store->length(); ++i) {
-        if (!backing_store->is_the_hole(i)) {
+        if (!backing_store->is_the_hole(isolate, i)) {
           ++num_used;
           // Bail out if a number dictionary wouldn't be able to save at least
           // 75% space.
@@ -1859,20 +1955,33 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
     DeleteCommon(obj, entry, handle(obj->elements()));
   }
 
-  static bool HasEntryImpl(FixedArrayBase* backing_store, uint32_t entry) {
-    return !BackingStore::cast(backing_store)->is_the_hole(entry);
+  static bool HasEntryImpl(Isolate* isolate, FixedArrayBase* backing_store,
+                           uint32_t entry) {
+    return !BackingStore::cast(backing_store)->is_the_hole(isolate, entry);
+  }
+
+  static uint32_t NumberOfElementsImpl(JSObject* receiver,
+                                       FixedArrayBase* backing_store) {
+    uint32_t max_index = Subclass::GetMaxIndex(receiver, backing_store);
+    if (IsFastPackedElementsKind(Subclass::kind())) return max_index;
+    Isolate* isolate = receiver->GetIsolate();
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < max_index; i++) {
+      if (Subclass::HasEntryImpl(isolate, backing_store, i)) count++;
+    }
+    return count;
   }
 
   static void AddElementsToKeyAccumulatorImpl(Handle<JSObject> receiver,
                                               KeyAccumulator* accumulator,
                                               AddKeyConversion convert) {
-    Handle<FixedArrayBase> elements(receiver->elements(),
-                                    accumulator->isolate());
+    Isolate* isolate = accumulator->isolate();
+    Handle<FixedArrayBase> elements(receiver->elements(), isolate);
     uint32_t length = Subclass::GetMaxNumberOfEntries(*receiver, *elements);
     for (uint32_t i = 0; i < length; i++) {
       if (IsFastPackedElementsKind(KindTraits::Kind) ||
-          HasEntryImpl(*elements, i)) {
-        accumulator->AddKey(Subclass::GetImpl(*elements, i), convert);
+          HasEntryImpl(isolate, *elements, i)) {
+        accumulator->AddKey(Subclass::GetImpl(isolate, *elements, i), convert);
       }
     }
   }
@@ -1900,12 +2009,12 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
       for (int i = 0; i < length; i++) {
         DCHECK(BackingStore::get(*backing_store, i, isolate)->IsSmi() ||
                (IsFastHoleyElementsKind(KindTraits::Kind) &&
-                backing_store->is_the_hole(i)));
+                backing_store->is_the_hole(isolate, i)));
       }
     } else if (KindTraits::Kind == FAST_ELEMENTS ||
                KindTraits::Kind == FAST_DOUBLE_ELEMENTS) {
       for (int i = 0; i < length; i++) {
-        DCHECK(!backing_store->is_the_hole(i));
+        DCHECK(!backing_store->is_the_hole(isolate, i));
       }
     } else {
       DCHECK(IsFastHoleyElementsKind(KindTraits::Kind));
@@ -1936,8 +2045,8 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
                                   AT_START);
   }
 
-  static Handle<JSArray> SliceImpl(Handle<JSObject> receiver,
-                                   uint32_t start, uint32_t end) {
+  static Handle<JSObject> SliceImpl(Handle<JSObject> receiver, uint32_t start,
+                                    uint32_t end) {
     Isolate* isolate = receiver->GetIsolate();
     Handle<FixedArrayBase> backing_store(receiver->elements(), isolate);
     int result_len = end < start ? 0u : end - start;
@@ -2007,11 +2116,13 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
       Isolate* isolate, Handle<JSObject> object,
       Handle<FixedArray> values_or_entries, bool get_entries, int* nof_items,
       PropertyFilter filter) {
+    Handle<BackingStore> elements(BackingStore::cast(object->elements()),
+                                  isolate);
     int count = 0;
-    uint32_t length = object->elements()->length();
+    uint32_t length = elements->length();
     for (uint32_t index = 0; index < length; ++index) {
-      if (!HasEntryImpl(object->elements(), index)) continue;
-      Handle<Object> value = Subclass::GetImpl(object->elements(), index);
+      if (!HasEntryImpl(isolate, *elements, index)) continue;
+      Handle<Object> value = Subclass::GetImpl(isolate, *elements, index);
       if (get_entries) {
         value = MakeEntryPair(isolate, index, value);
       }
@@ -2201,6 +2312,24 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
     }
   }
 
+  static Handle<FixedArray> CreateListFromArrayImpl(Isolate* isolate,
+                                                    Handle<JSArray> array) {
+    uint32_t length = 0;
+    array->length()->ToArrayLength(&length);
+    Handle<FixedArray> result = isolate->factory()->NewFixedArray(length);
+    Handle<FixedArrayBase> elements(array->elements(), isolate);
+    for (uint32_t i = 0; i < length; i++) {
+      if (!Subclass::HasElementImpl(isolate, *array, i, *elements)) continue;
+      Handle<Object> value;
+      value = Subclass::GetImpl(isolate, *elements, i);
+      if (value->IsName()) {
+        value = isolate->factory()->InternalizeName(Handle<Name>::cast(value));
+      }
+      result->set(i, *value);
+    }
+    return result;
+  }
+
  private:
   // SpliceShrinkStep might modify the backing_store.
   static void SpliceShrinkStep(Isolate* isolate, Handle<JSArray> receiver,
@@ -2259,7 +2388,8 @@ class FastElementsAccessor : public ElementsAccessorBase<Subclass, KindTraits> {
     DCHECK(length > 0);
     int new_length = length - 1;
     int remove_index = remove_position == AT_START ? 0 : new_length;
-    Handle<Object> result = Subclass::GetImpl(*backing_store, remove_index);
+    Handle<Object> result =
+        Subclass::GetImpl(isolate, *backing_store, remove_index);
     if (remove_position == AT_START) {
       Subclass::MoveElements(isolate, receiver, backing_store, 0, 1, new_length,
                              0, 0);
@@ -2350,7 +2480,6 @@ class FastSmiOrObjectElementsAccessor
     uint32_t index = Subclass::GetIndexForEntryImpl(backing_store, entry);
     return backing_store->get(index);
   }
-
 
   // NOTE: this method violates the handlified function signature convention:
   // raw pointer parameters in the function that allocates.
@@ -2481,12 +2610,8 @@ class FastDoubleElementsAccessor
   explicit FastDoubleElementsAccessor(const char* name)
       : FastElementsAccessor<Subclass, KindTraits>(name) {}
 
-  static Handle<Object> GetImpl(Handle<JSObject> holder, uint32_t entry) {
-    return GetImpl(holder->elements(), entry);
-  }
-
-  static Handle<Object> GetImpl(FixedArrayBase* backing_store, uint32_t entry) {
-    Isolate* isolate = backing_store->GetIsolate();
+  static Handle<Object> GetImpl(Isolate* isolate, FixedArrayBase* backing_store,
+                                uint32_t entry) {
     return FixedDoubleArray::get(FixedDoubleArray::cast(backing_store), entry,
                                  isolate);
   }
@@ -2555,9 +2680,9 @@ class FastDoubleElementsAccessor
     FixedArrayBase* elements_base = receiver->elements();
     Object* value = *search_value;
 
-    if (start_from >= length) return Just<int64_t>(-1);
-
     length = std::min(static_cast<uint32_t>(elements_base->length()), length);
+
+    if (start_from >= length) return Just<int64_t>(-1);
 
     if (!value->IsNumber()) {
       return Just<int64_t>(-1);
@@ -2633,27 +2758,24 @@ class TypedElementsAccessor
     BackingStore::cast(backing_store)->SetValue(entry, value);
   }
 
-  static Handle<Object> GetImpl(Handle<JSObject> holder, uint32_t entry) {
-    return GetImpl(holder->elements(), entry);
-  }
-
-  static Handle<Object> GetImpl(FixedArrayBase* backing_store, uint32_t entry) {
+  static Handle<Object> GetImpl(Isolate* isolate, FixedArrayBase* backing_store,
+                                uint32_t entry) {
     return BackingStore::get(BackingStore::cast(backing_store), entry);
   }
 
   static PropertyDetails GetDetailsImpl(JSObject* holder, uint32_t entry) {
-    return PropertyDetails(DONT_DELETE, DATA, 0, PropertyCellType::kNoCell);
+    return PropertyDetails(kData, DONT_DELETE, 0, PropertyCellType::kNoCell);
   }
 
   static PropertyDetails GetDetailsImpl(FixedArrayBase* backing_store,
                                         uint32_t entry) {
-    return PropertyDetails(DONT_DELETE, DATA, 0, PropertyCellType::kNoCell);
+    return PropertyDetails(kData, DONT_DELETE, 0, PropertyCellType::kNoCell);
   }
 
-  static bool HasElementImpl(Handle<JSObject> holder, uint32_t index,
-                             Handle<FixedArrayBase> backing_store,
+  static bool HasElementImpl(Isolate* isolate, JSObject* holder, uint32_t index,
+                             FixedArrayBase* backing_store,
                              PropertyFilter filter) {
-    return index < AccessorClass::GetCapacityImpl(*holder, *backing_store);
+    return index < AccessorClass::GetCapacityImpl(holder, backing_store);
   }
 
   static bool HasAccessorsImpl(JSObject* holder,
@@ -2677,7 +2799,7 @@ class TypedElementsAccessor
     return entry;
   }
 
-  static uint32_t GetEntryForIndexImpl(JSObject* holder,
+  static uint32_t GetEntryForIndexImpl(Isolate* isolate, JSObject* holder,
                                        FixedArrayBase* backing_store,
                                        uint32_t index, PropertyFilter filter) {
     return index < AccessorClass::GetCapacityImpl(holder, backing_store)
@@ -2685,20 +2807,30 @@ class TypedElementsAccessor
                : kMaxUInt32;
   }
 
+  static bool WasNeutered(JSObject* holder) {
+    JSArrayBufferView* view = JSArrayBufferView::cast(holder);
+    return view->WasNeutered();
+  }
+
   static uint32_t GetCapacityImpl(JSObject* holder,
                                   FixedArrayBase* backing_store) {
-    JSArrayBufferView* view = JSArrayBufferView::cast(holder);
-    if (view->WasNeutered()) return 0;
+    if (WasNeutered(holder)) return 0;
     return backing_store->length();
+  }
+
+  static uint32_t NumberOfElementsImpl(JSObject* receiver,
+                                       FixedArrayBase* backing_store) {
+    return AccessorClass::GetCapacityImpl(receiver, backing_store);
   }
 
   static void AddElementsToKeyAccumulatorImpl(Handle<JSObject> receiver,
                                               KeyAccumulator* accumulator,
                                               AddKeyConversion convert) {
+    Isolate* isolate = receiver->GetIsolate();
     Handle<FixedArrayBase> elements(receiver->elements());
     uint32_t length = AccessorClass::GetCapacityImpl(*receiver, *elements);
     for (uint32_t i = 0; i < length; i++) {
-      Handle<Object> value = AccessorClass::GetImpl(*elements, i);
+      Handle<Object> value = AccessorClass::GetImpl(isolate, *elements, i);
       accumulator->AddKey(value, convert);
     }
   }
@@ -2712,7 +2844,8 @@ class TypedElementsAccessor
       Handle<FixedArrayBase> elements(object->elements());
       uint32_t length = AccessorClass::GetCapacityImpl(*object, *elements);
       for (uint32_t index = 0; index < length; ++index) {
-        Handle<Object> value = AccessorClass::GetImpl(*elements, index);
+        Handle<Object> value =
+            AccessorClass::GetImpl(isolate, *elements, index);
         if (get_entries) {
           value = MakeEntryPair(isolate, index, value);
         }
@@ -2723,12 +2856,44 @@ class TypedElementsAccessor
     return Just(true);
   }
 
+  static Object* FillImpl(Isolate* isolate, Handle<JSObject> receiver,
+                          Handle<Object> obj_value, uint32_t start,
+                          uint32_t end) {
+    Handle<JSTypedArray> array = Handle<JSTypedArray>::cast(receiver);
+    DCHECK(!array->WasNeutered());
+    DCHECK(obj_value->IsNumber());
+
+    ctype value;
+    if (obj_value->IsSmi()) {
+      value = BackingStore::from_int(Smi::cast(*obj_value)->value());
+    } else {
+      DCHECK(obj_value->IsHeapNumber());
+      value = BackingStore::from_double(HeapNumber::cast(*obj_value)->value());
+    }
+
+    // Ensure indexes are within array bounds
+    DCHECK_LE(0, start);
+    DCHECK_LE(start, end);
+    DCHECK_LE(end, array->length_value());
+
+    DisallowHeapAllocation no_gc;
+    BackingStore* elements = BackingStore::cast(receiver->elements());
+    ctype* data = static_cast<ctype*>(elements->DataPtr());
+    std::fill(data + start, data + end, value);
+    return *array;
+  }
+
   static Maybe<bool> IncludesValueImpl(Isolate* isolate,
                                        Handle<JSObject> receiver,
                                        Handle<Object> value,
                                        uint32_t start_from, uint32_t length) {
-    DCHECK(JSObject::PrototypeHasNoElements(isolate, *receiver));
     DisallowHeapAllocation no_gc;
+
+    // TODO(caitp): return Just(false) here when implementing strict throwing on
+    // neutered views.
+    if (WasNeutered(*receiver)) {
+      return Just(value->IsUndefined(isolate) && length > start_from);
+    }
 
     BackingStore* elements = BackingStore::cast(receiver->elements());
     if (value->IsUndefined(isolate) &&
@@ -2776,8 +2941,9 @@ class TypedElementsAccessor
                                          Handle<JSObject> receiver,
                                          Handle<Object> value,
                                          uint32_t start_from, uint32_t length) {
-    DCHECK(JSObject::PrototypeHasNoElements(isolate, *receiver));
     DisallowHeapAllocation no_gc;
+
+    if (WasNeutered(*receiver)) return Just<int64_t>(-1);
 
     BackingStore* elements = BackingStore::cast(receiver->elements());
     if (!value->IsNumber()) return Just<int64_t>(-1);
@@ -2817,6 +2983,111 @@ class TypedElementsAccessor
     }
     return Just<int64_t>(-1);
   }
+
+  static Maybe<int64_t> LastIndexOfValueImpl(Isolate* isolate,
+                                             Handle<JSObject> receiver,
+                                             Handle<Object> value,
+                                             uint32_t start_from) {
+    DisallowHeapAllocation no_gc;
+    DCHECK(!WasNeutered(*receiver));
+
+    if (!value->IsNumber()) return Just<int64_t>(-1);
+    BackingStore* elements = BackingStore::cast(receiver->elements());
+
+    double search_value = value->Number();
+
+    if (!std::isfinite(search_value)) {
+      if (std::is_integral<ctype>::value) {
+        // Integral types cannot represent +Inf or NaN.
+        return Just<int64_t>(-1);
+      } else if (std::isnan(search_value)) {
+        // Strict Equality Comparison of NaN is always false.
+        return Just<int64_t>(-1);
+      }
+    } else if (search_value < std::numeric_limits<ctype>::lowest() ||
+               search_value > std::numeric_limits<ctype>::max()) {
+      // Return -1 if value can't be represented in this ElementsKind.
+      return Just<int64_t>(-1);
+    }
+
+    ctype typed_search_value = static_cast<ctype>(search_value);
+    if (static_cast<double>(typed_search_value) != search_value) {
+      return Just<int64_t>(-1);  // Loss of precision.
+    }
+
+    DCHECK_LT(start_from, elements->length());
+
+    uint32_t k = start_from;
+    do {
+      ctype element_k = elements->get_scalar(k);
+      if (element_k == typed_search_value) return Just<int64_t>(k);
+    } while (k-- != 0);
+    return Just<int64_t>(-1);
+  }
+
+  static void ReverseImpl(JSObject* receiver) {
+    DisallowHeapAllocation no_gc;
+    DCHECK(!WasNeutered(receiver));
+
+    BackingStore* elements = BackingStore::cast(receiver->elements());
+
+    uint32_t len = elements->length();
+    if (len == 0) return;
+
+    ctype* data = static_cast<ctype*>(elements->DataPtr());
+    std::reverse(data, data + len);
+  }
+
+  static Handle<JSObject> SliceWithResultImpl(Handle<JSObject> receiver,
+                                              uint32_t start, uint32_t end,
+                                              Handle<JSObject> result) {
+    Isolate* isolate = receiver->GetIsolate();
+    DCHECK(!WasNeutered(*receiver));
+    DCHECK(result->IsJSTypedArray());
+    DCHECK(!WasNeutered(*result));
+    DCHECK_LE(start, end);
+
+    Handle<JSTypedArray> array = Handle<JSTypedArray>::cast(receiver);
+    Handle<JSTypedArray> result_array = Handle<JSTypedArray>::cast(result);
+    DCHECK_LE(end, array->length_value());
+
+    // Fast path for the same type result array
+    if (result_array->type() == array->type()) {
+      int64_t element_size = array->element_size();
+      int64_t count = end - start;
+
+      DisallowHeapAllocation no_gc;
+      BackingStore* src_elements = BackingStore::cast(receiver->elements());
+      BackingStore* result_elements =
+          BackingStore::cast(result_array->elements());
+
+      DCHECK_LE(count, result_elements->length());
+      uint8_t* src =
+          static_cast<uint8_t*>(src_elements->DataPtr()) + start * element_size;
+      uint8_t* result = static_cast<uint8_t*>(result_elements->DataPtr());
+      if (array->buffer() != result_array->buffer()) {
+        std::memcpy(result, src, count * element_size);
+      } else {
+        // The spec defines the copy-step iteratively, which means that we
+        // cannot use memcpy if the buffer is shared.
+        uint8_t* end = src + count * element_size;
+        while (src < end) {
+          *result++ = *src++;
+        }
+      }
+      return result_array;
+    }
+
+    // If the types of the two typed arrays are different, properly convert
+    // elements
+    Handle<BackingStore> from(BackingStore::cast(array->elements()), isolate);
+    ElementsAccessor* result_accessor = result_array->GetElementsAccessor();
+    for (uint32_t i = start; i < end; i++) {
+      Handle<Object> elem = AccessorClass::GetImpl(isolate, *from, i);
+      result_accessor->Set(result_array, i, *elem);
+    }
+    return result_array;
+  }
 };
 
 #define FIXED_ELEMENTS_ACCESSOR(Type, type, TYPE, ctype, size) \
@@ -2835,35 +3106,31 @@ class SloppyArgumentsElementsAccessor
     USE(KindTraits::Kind);
   }
 
-  static Handle<Object> GetImpl(Handle<JSObject> holder, uint32_t entry) {
-    return GetImpl(holder->elements(), entry);
+  static void ConvertArgumentsStoreResult(
+      Isolate* isolate, Handle<SloppyArgumentsElements> elements,
+      Handle<Object> result) {
+    UNREACHABLE();
   }
 
-  static Handle<Object> GetImpl(FixedArrayBase* parameters, uint32_t entry) {
-    Isolate* isolate = parameters->GetIsolate();
-    Handle<FixedArray> parameter_map(FixedArray::cast(parameters), isolate);
-    uint32_t length = parameter_map->length() - 2;
+  static Handle<Object> GetImpl(Isolate* isolate, FixedArrayBase* parameters,
+                                uint32_t entry) {
+    Handle<SloppyArgumentsElements> elements(
+        SloppyArgumentsElements::cast(parameters), isolate);
+    uint32_t length = elements->parameter_map_length();
     if (entry < length) {
+      // Read context mapped entry.
       DisallowHeapAllocation no_gc;
-      Object* probe = parameter_map->get(entry + 2);
-      Context* context = Context::cast(parameter_map->get(0));
+      Object* probe = elements->get_mapped_entry(entry);
+      DCHECK(!probe->IsTheHole(isolate));
+      Context* context = elements->context();
       int context_entry = Smi::cast(probe)->value();
       DCHECK(!context->get(context_entry)->IsTheHole(isolate));
       return handle(context->get(context_entry), isolate);
     } else {
-      // Object is not mapped, defer to the arguments.
+      // Entry is not context mapped, defer to the arguments.
       Handle<Object> result = ArgumentsAccessor::GetImpl(
-          FixedArray::cast(parameter_map->get(1)), entry - length);
-      // Elements of the arguments object in slow mode might be slow aliases.
-      if (result->IsAliasedArgumentsEntry()) {
-        DisallowHeapAllocation no_gc;
-        AliasedArgumentsEntry* alias = AliasedArgumentsEntry::cast(*result);
-        Context* context = Context::cast(parameter_map->get(0));
-        int context_entry = alias->aliased_context_slot();
-        DCHECK(!context->get(context_entry)->IsTheHole(isolate));
-        return handle(context->get(context_entry), isolate);
-      }
-      return result;
+          isolate, elements->arguments(), entry - length);
+      return Subclass::ConvertArgumentsStoreResult(isolate, elements, result);
     }
   }
 
@@ -2884,20 +3151,24 @@ class SloppyArgumentsElementsAccessor
 
   static inline void SetImpl(FixedArrayBase* store, uint32_t entry,
                              Object* value) {
-    FixedArray* parameter_map = FixedArray::cast(store);
-    uint32_t length = parameter_map->length() - 2;
+    SloppyArgumentsElements* elements = SloppyArgumentsElements::cast(store);
+    uint32_t length = elements->parameter_map_length();
     if (entry < length) {
-      Object* probe = parameter_map->get(entry + 2);
-      Context* context = Context::cast(parameter_map->get(0));
+      // Store context mapped entry.
+      DisallowHeapAllocation no_gc;
+      Object* probe = elements->get_mapped_entry(entry);
+      DCHECK(!probe->IsTheHole(store->GetIsolate()));
+      Context* context = elements->context();
       int context_entry = Smi::cast(probe)->value();
       DCHECK(!context->get(context_entry)->IsTheHole(store->GetIsolate()));
       context->set(context_entry, value);
     } else {
-      FixedArray* arguments = FixedArray::cast(parameter_map->get(1));
+      //  Entry is not context mapped defer to arguments.
+      FixedArray* arguments = elements->arguments();
       Object* current = ArgumentsAccessor::GetRaw(arguments, entry - length);
       if (current->IsAliasedArgumentsEntry()) {
         AliasedArgumentsEntry* alias = AliasedArgumentsEntry::cast(current);
-        Context* context = Context::cast(parameter_map->get(0));
+        Context* context = elements->context();
         int context_entry = alias->aliased_context_slot();
         DCHECK(!context->get(context_entry)->IsTheHole(store->GetIsolate()));
         context->set(context_entry, value);
@@ -2914,100 +3185,121 @@ class SloppyArgumentsElementsAccessor
     UNREACHABLE();
   }
 
-  static uint32_t GetCapacityImpl(JSObject* holder,
-                                  FixedArrayBase* backing_store) {
-    FixedArray* parameter_map = FixedArray::cast(backing_store);
-    FixedArrayBase* arguments = FixedArrayBase::cast(parameter_map->get(1));
-    return parameter_map->length() - 2 +
+  static uint32_t GetCapacityImpl(JSObject* holder, FixedArrayBase* store) {
+    SloppyArgumentsElements* elements = SloppyArgumentsElements::cast(store);
+    FixedArray* arguments = elements->arguments();
+    return elements->parameter_map_length() +
            ArgumentsAccessor::GetCapacityImpl(holder, arguments);
   }
 
   static uint32_t GetMaxNumberOfEntries(JSObject* holder,
                                         FixedArrayBase* backing_store) {
-    FixedArray* parameter_map = FixedArray::cast(backing_store);
-    FixedArrayBase* arguments = FixedArrayBase::cast(parameter_map->get(1));
-    return parameter_map->length() - 2 +
+    SloppyArgumentsElements* elements =
+        SloppyArgumentsElements::cast(backing_store);
+    FixedArrayBase* arguments = elements->arguments();
+    return elements->parameter_map_length() +
            ArgumentsAccessor::GetMaxNumberOfEntries(holder, arguments);
+  }
+
+  static uint32_t NumberOfElementsImpl(JSObject* receiver,
+                                       FixedArrayBase* backing_store) {
+    Isolate* isolate = receiver->GetIsolate();
+    SloppyArgumentsElements* elements =
+        SloppyArgumentsElements::cast(backing_store);
+    FixedArrayBase* arguments = elements->arguments();
+    uint32_t nof_elements = 0;
+    uint32_t length = elements->parameter_map_length();
+    for (uint32_t entry = 0; entry < length; entry++) {
+      if (HasParameterMapArg(isolate, elements, entry)) nof_elements++;
+    }
+    return nof_elements +
+           ArgumentsAccessor::NumberOfElementsImpl(receiver, arguments);
   }
 
   static void AddElementsToKeyAccumulatorImpl(Handle<JSObject> receiver,
                                               KeyAccumulator* accumulator,
                                               AddKeyConversion convert) {
-    FixedArrayBase* elements = receiver->elements();
-    uint32_t length = GetCapacityImpl(*receiver, elements);
+    Isolate* isolate = accumulator->isolate();
+    Handle<FixedArrayBase> elements(receiver->elements(), isolate);
+    uint32_t length = GetCapacityImpl(*receiver, *elements);
     for (uint32_t entry = 0; entry < length; entry++) {
-      if (!HasEntryImpl(elements, entry)) continue;
-      Handle<Object> value = GetImpl(elements, entry);
+      if (!HasEntryImpl(isolate, *elements, entry)) continue;
+      Handle<Object> value = GetImpl(isolate, *elements, entry);
       accumulator->AddKey(value, convert);
     }
   }
 
-  static bool HasEntryImpl(FixedArrayBase* parameters, uint32_t entry) {
-    FixedArray* parameter_map = FixedArray::cast(parameters);
-    uint32_t length = parameter_map->length() - 2;
+  static bool HasEntryImpl(Isolate* isolate, FixedArrayBase* parameters,
+                           uint32_t entry) {
+    SloppyArgumentsElements* elements =
+        SloppyArgumentsElements::cast(parameters);
+    uint32_t length = elements->parameter_map_length();
     if (entry < length) {
-      return HasParameterMapArg(parameter_map, entry);
+      return HasParameterMapArg(isolate, elements, entry);
     }
-
-    FixedArrayBase* arguments = FixedArrayBase::cast(parameter_map->get(1));
-    return ArgumentsAccessor::HasEntryImpl(arguments, entry - length);
+    FixedArrayBase* arguments = elements->arguments();
+    return ArgumentsAccessor::HasEntryImpl(isolate, arguments, entry - length);
   }
 
   static bool HasAccessorsImpl(JSObject* holder,
                                FixedArrayBase* backing_store) {
-    FixedArray* parameter_map = FixedArray::cast(backing_store);
-    FixedArrayBase* arguments = FixedArrayBase::cast(parameter_map->get(1));
+    SloppyArgumentsElements* elements =
+        SloppyArgumentsElements::cast(backing_store);
+    FixedArray* arguments = elements->arguments();
     return ArgumentsAccessor::HasAccessorsImpl(holder, arguments);
   }
 
   static uint32_t GetIndexForEntryImpl(FixedArrayBase* parameters,
                                        uint32_t entry) {
-    FixedArray* parameter_map = FixedArray::cast(parameters);
-    uint32_t length = parameter_map->length() - 2;
+    SloppyArgumentsElements* elements =
+        SloppyArgumentsElements::cast(parameters);
+    uint32_t length = elements->parameter_map_length();
     if (entry < length) return entry;
-
-    FixedArray* arguments = FixedArray::cast(parameter_map->get(1));
+    FixedArray* arguments = elements->arguments();
     return ArgumentsAccessor::GetIndexForEntryImpl(arguments, entry - length);
   }
 
-  static uint32_t GetEntryForIndexImpl(JSObject* holder,
+  static uint32_t GetEntryForIndexImpl(Isolate* isolate, JSObject* holder,
                                        FixedArrayBase* parameters,
                                        uint32_t index, PropertyFilter filter) {
-    FixedArray* parameter_map = FixedArray::cast(parameters);
-    if (HasParameterMapArg(parameter_map, index)) return index;
-
-    FixedArray* arguments = FixedArray::cast(parameter_map->get(1));
-    uint32_t entry = ArgumentsAccessor::GetEntryForIndexImpl(holder, arguments,
-                                                             index, filter);
+    SloppyArgumentsElements* elements =
+        SloppyArgumentsElements::cast(parameters);
+    if (HasParameterMapArg(isolate, elements, index)) return index;
+    FixedArray* arguments = elements->arguments();
+    uint32_t entry = ArgumentsAccessor::GetEntryForIndexImpl(
+        isolate, holder, arguments, index, filter);
     if (entry == kMaxUInt32) return kMaxUInt32;
-    return (parameter_map->length() - 2) + entry;
+    return elements->parameter_map_length() + entry;
   }
 
   static PropertyDetails GetDetailsImpl(JSObject* holder, uint32_t entry) {
-    FixedArray* parameter_map = FixedArray::cast(holder->elements());
-    uint32_t length = parameter_map->length() - 2;
+    SloppyArgumentsElements* elements =
+        SloppyArgumentsElements::cast(holder->elements());
+    uint32_t length = elements->parameter_map_length();
     if (entry < length) {
-      return PropertyDetails(NONE, DATA, 0, PropertyCellType::kNoCell);
+      return PropertyDetails(kData, NONE, 0, PropertyCellType::kNoCell);
     }
-    FixedArray* arguments = FixedArray::cast(parameter_map->get(1));
+    FixedArray* arguments = elements->arguments();
     return ArgumentsAccessor::GetDetailsImpl(arguments, entry - length);
   }
 
-  static bool HasParameterMapArg(FixedArray* parameter_map, uint32_t index) {
-    uint32_t length = parameter_map->length() - 2;
+  static bool HasParameterMapArg(Isolate* isolate,
+                                 SloppyArgumentsElements* elements,
+                                 uint32_t index) {
+    uint32_t length = elements->parameter_map_length();
     if (index >= length) return false;
-    return !parameter_map->get(index + 2)->IsTheHole(
-        parameter_map->GetIsolate());
+    return !elements->get_mapped_entry(index)->IsTheHole(isolate);
   }
 
   static void DeleteImpl(Handle<JSObject> obj, uint32_t entry) {
-    FixedArray* parameter_map = FixedArray::cast(obj->elements());
-    uint32_t length = static_cast<uint32_t>(parameter_map->length()) - 2;
+    SloppyArgumentsElements* elements =
+        SloppyArgumentsElements::cast(obj->elements());
+    uint32_t length = elements->parameter_map_length();
     if (entry < length) {
       // TODO(kmillikin): We could check if this was the last aliased
       // parameter, and revert to normal elements in that case.  That
       // would enable GC of the context.
-      parameter_map->set_the_hole(entry + 2);
+      elements->set_mapped_entry(entry, obj->GetHeap()->the_hole_value());
     } else {
       Subclass::DeleteFromArguments(obj, entry - length);
     }
@@ -3034,11 +3326,12 @@ class SloppyArgumentsElementsAccessor
       Handle<FixedArrayBase> backing_store, GetKeysConversion convert,
       PropertyFilter filter, Handle<FixedArray> list, uint32_t* nof_indices,
       uint32_t insertion_index = 0) {
-    Handle<FixedArray> parameter_map(FixedArray::cast(*backing_store), isolate);
-    uint32_t length = parameter_map->length() - 2;
+    Handle<SloppyArgumentsElements> elements =
+        Handle<SloppyArgumentsElements>::cast(backing_store);
+    uint32_t length = elements->parameter_map_length();
 
     for (uint32_t i = 0; i < length; ++i) {
-      if (parameter_map->get(i + 2)->IsTheHole(isolate)) continue;
+      if (elements->get_mapped_entry(i)->IsTheHole(isolate)) continue;
       if (convert == GetKeysConversion::kConvertToString) {
         Handle<String> index_string = isolate->factory()->Uint32ToString(i);
         list->set(insertion_index, *index_string);
@@ -3048,7 +3341,7 @@ class SloppyArgumentsElementsAccessor
       insertion_index++;
     }
 
-    Handle<FixedArrayBase> store(FixedArrayBase::cast(parameter_map->get(1)));
+    Handle<FixedArray> store(elements->arguments(), isolate);
     return ArgumentsAccessor::DirectCollectElementIndicesImpl(
         isolate, object, store, convert, filter, list, nof_indices,
         insertion_index);
@@ -3060,19 +3353,19 @@ class SloppyArgumentsElementsAccessor
                                        uint32_t start_from, uint32_t length) {
     DCHECK(JSObject::PrototypeHasNoElements(isolate, *object));
     Handle<Map> original_map = handle(object->map(), isolate);
-    Handle<FixedArray> parameter_map(FixedArray::cast(object->elements()),
-                                     isolate);
+    Handle<SloppyArgumentsElements> elements(
+        SloppyArgumentsElements::cast(object->elements()), isolate);
     bool search_for_hole = value->IsUndefined(isolate);
 
     for (uint32_t k = start_from; k < length; ++k) {
       uint32_t entry =
-          GetEntryForIndexImpl(*object, *parameter_map, k, ALL_PROPERTIES);
+          GetEntryForIndexImpl(isolate, *object, *elements, k, ALL_PROPERTIES);
       if (entry == kMaxUInt32) {
         if (search_for_hole) return Just(true);
         continue;
       }
 
-      Handle<Object> element_k = GetImpl(*parameter_map, entry);
+      Handle<Object> element_k = Subclass::GetImpl(isolate, *elements, entry);
 
       if (element_k->IsAccessorPair()) {
         LookupIterator it(isolate, object, k, LookupIterator::OWN);
@@ -3101,17 +3394,17 @@ class SloppyArgumentsElementsAccessor
                                          uint32_t start_from, uint32_t length) {
     DCHECK(JSObject::PrototypeHasNoElements(isolate, *object));
     Handle<Map> original_map = handle(object->map(), isolate);
-    Handle<FixedArray> parameter_map(FixedArray::cast(object->elements()),
-                                     isolate);
+    Handle<SloppyArgumentsElements> elements(
+        SloppyArgumentsElements::cast(object->elements()), isolate);
 
     for (uint32_t k = start_from; k < length; ++k) {
       uint32_t entry =
-          GetEntryForIndexImpl(*object, *parameter_map, k, ALL_PROPERTIES);
+          GetEntryForIndexImpl(isolate, *object, *elements, k, ALL_PROPERTIES);
       if (entry == kMaxUInt32) {
         continue;
       }
 
-      Handle<Object> element_k = GetImpl(*parameter_map, entry);
+      Handle<Object> element_k = Subclass::GetImpl(isolate, *elements, entry);
 
       if (element_k->IsAccessorPair()) {
         LookupIterator it(isolate, object, k, LookupIterator::OWN);
@@ -3148,10 +3441,26 @@ class SlowSloppyArgumentsElementsAccessor
             SlowSloppyArgumentsElementsAccessor, DictionaryElementsAccessor,
             ElementsKindTraits<SLOW_SLOPPY_ARGUMENTS_ELEMENTS> >(name) {}
 
+  static Handle<Object> ConvertArgumentsStoreResult(
+      Isolate* isolate, Handle<SloppyArgumentsElements> elements,
+      Handle<Object> result) {
+    // Elements of the arguments object in slow mode might be slow aliases.
+    if (result->IsAliasedArgumentsEntry()) {
+      DisallowHeapAllocation no_gc;
+      AliasedArgumentsEntry* alias = AliasedArgumentsEntry::cast(*result);
+      Context* context = elements->context();
+      int context_entry = alias->aliased_context_slot();
+      DCHECK(!context->get(context_entry)->IsTheHole(isolate));
+      return handle(context->get(context_entry), isolate);
+    }
+    return result;
+  }
   static void DeleteFromArguments(Handle<JSObject> obj, uint32_t entry) {
-    Handle<FixedArray> parameter_map(FixedArray::cast(obj->elements()));
+    Isolate* isolate = obj->GetIsolate();
+    Handle<SloppyArgumentsElements> elements(
+        SloppyArgumentsElements::cast(obj->elements()), isolate);
     Handle<SeededNumberDictionary> dict(
-        SeededNumberDictionary::cast(parameter_map->get(1)));
+        SeededNumberDictionary::cast(elements->arguments()), isolate);
     // TODO(verwaest): Remove reliance on index in Shrink.
     uint32_t index = GetIndexForEntryImpl(*dict, entry);
     Handle<Object> result = SeededNumberDictionary::DeleteProperty(dict, entry);
@@ -3159,27 +3468,28 @@ class SlowSloppyArgumentsElementsAccessor
     DCHECK(result->IsTrue(dict->GetIsolate()));
     Handle<FixedArray> new_elements =
         SeededNumberDictionary::Shrink(dict, index);
-    parameter_map->set(1, *new_elements);
+    elements->set_arguments(*new_elements);
   }
 
   static void AddImpl(Handle<JSObject> object, uint32_t index,
                       Handle<Object> value, PropertyAttributes attributes,
                       uint32_t new_capacity) {
-    Handle<FixedArray> parameter_map(FixedArray::cast(object->elements()));
-    Handle<FixedArrayBase> old_elements(
-        FixedArrayBase::cast(parameter_map->get(1)));
+    Isolate* isolate = object->GetIsolate();
+    Handle<SloppyArgumentsElements> elements(
+        SloppyArgumentsElements::cast(object->elements()), isolate);
+    Handle<FixedArrayBase> old_arguments(
+        FixedArrayBase::cast(elements->arguments()), isolate);
     Handle<SeededNumberDictionary> dictionary =
-        old_elements->IsSeededNumberDictionary()
-            ? Handle<SeededNumberDictionary>::cast(old_elements)
+        old_arguments->IsSeededNumberDictionary()
+            ? Handle<SeededNumberDictionary>::cast(old_arguments)
             : JSObject::NormalizeElements(object);
-    PropertyDetails details(attributes, DATA, 0, PropertyCellType::kNoCell);
+    PropertyDetails details(kData, attributes, 0, PropertyCellType::kNoCell);
     Handle<SeededNumberDictionary> new_dictionary =
-        SeededNumberDictionary::AddNumberEntry(
-            dictionary, index, value, details,
-            object->map()->is_prototype_map());
+        SeededNumberDictionary::AddNumberEntry(dictionary, index, value,
+                                               details, object);
     if (attributes != NONE) object->RequireSlowElements(*new_dictionary);
     if (*dictionary != *new_dictionary) {
-      FixedArray::cast(object->elements())->set(1, *new_dictionary);
+      elements->set_arguments(*new_dictionary);
     }
   }
 
@@ -3187,37 +3497,37 @@ class SlowSloppyArgumentsElementsAccessor
                               Handle<FixedArrayBase> store, uint32_t entry,
                               Handle<Object> value,
                               PropertyAttributes attributes) {
-    Handle<FixedArray> parameter_map = Handle<FixedArray>::cast(store);
-    uint32_t length = parameter_map->length() - 2;
     Isolate* isolate = store->GetIsolate();
+    Handle<SloppyArgumentsElements> elements =
+        Handle<SloppyArgumentsElements>::cast(store);
+    uint32_t length = elements->parameter_map_length();
     if (entry < length) {
-      Object* probe = parameter_map->get(entry + 2);
+      Object* probe = elements->get_mapped_entry(entry);
       DCHECK(!probe->IsTheHole(isolate));
-      Context* context = Context::cast(parameter_map->get(0));
+      Context* context = elements->context();
       int context_entry = Smi::cast(probe)->value();
       DCHECK(!context->get(context_entry)->IsTheHole(isolate));
       context->set(context_entry, *value);
 
       // Redefining attributes of an aliased element destroys fast aliasing.
-      parameter_map->set_the_hole(entry + 2);
+      elements->set_mapped_entry(entry, isolate->heap()->the_hole_value());
       // For elements that are still writable we re-establish slow aliasing.
       if ((attributes & READ_ONLY) == 0) {
         value = isolate->factory()->NewAliasedArgumentsEntry(context_entry);
       }
 
-      PropertyDetails details(attributes, DATA, 0, PropertyCellType::kNoCell);
+      PropertyDetails details(kData, attributes, 0, PropertyCellType::kNoCell);
       Handle<SeededNumberDictionary> arguments(
-          SeededNumberDictionary::cast(parameter_map->get(1)), isolate);
+          SeededNumberDictionary::cast(elements->arguments()), isolate);
       arguments = SeededNumberDictionary::AddNumberEntry(
-          arguments, entry, value, details, object->map()->is_prototype_map());
+          arguments, entry, value, details, object);
       // If the attributes were NONE, we would have called set rather than
       // reconfigure.
       DCHECK_NE(NONE, attributes);
       object->RequireSlowElements(*arguments);
-      parameter_map->set(1, *arguments);
+      elements->set_arguments(*arguments);
     } else {
-      Handle<FixedArrayBase> arguments(
-          FixedArrayBase::cast(parameter_map->get(1)), isolate);
+      Handle<FixedArrayBase> arguments(elements->arguments(), isolate);
       DictionaryElementsAccessor::ReconfigureImpl(
           object, arguments, entry - length, value, attributes);
     }
@@ -3236,14 +3546,21 @@ class FastSloppyArgumentsElementsAccessor
             FastHoleyObjectElementsAccessor,
             ElementsKindTraits<FAST_SLOPPY_ARGUMENTS_ELEMENTS> >(name) {}
 
-  static Handle<FixedArray> GetArguments(Isolate* isolate,
-                                         FixedArrayBase* backing_store) {
-    FixedArray* parameter_map = FixedArray::cast(backing_store);
-    return Handle<FixedArray>(FixedArray::cast(parameter_map->get(1)), isolate);
+  static Handle<Object> ConvertArgumentsStoreResult(
+      Isolate* isolate, Handle<SloppyArgumentsElements> paramtere_map,
+      Handle<Object> result) {
+    DCHECK(!result->IsAliasedArgumentsEntry());
+    return result;
   }
 
-  static Handle<JSArray> SliceImpl(Handle<JSObject> receiver, uint32_t start,
-                                   uint32_t end) {
+  static Handle<FixedArray> GetArguments(Isolate* isolate,
+                                         FixedArrayBase* store) {
+    SloppyArgumentsElements* elements = SloppyArgumentsElements::cast(store);
+    return Handle<FixedArray>(elements->arguments(), isolate);
+  }
+
+  static Handle<JSObject> SliceImpl(Handle<JSObject> receiver, uint32_t start,
+                                    uint32_t end) {
     Isolate* isolate = receiver->GetIsolate();
     uint32_t result_len = end < start ? 0u : end - start;
     Handle<JSArray> result_array = isolate->factory()->NewJSArray(
@@ -3253,12 +3570,12 @@ class FastSloppyArgumentsElementsAccessor
     FixedArray* parameters = FixedArray::cast(receiver->elements());
     uint32_t insertion_index = 0;
     for (uint32_t i = start; i < end; i++) {
-      uint32_t entry =
-          GetEntryForIndexImpl(*receiver, parameters, i, ALL_PROPERTIES);
-      if (entry != kMaxUInt32 && HasEntryImpl(parameters, entry)) {
-        elements->set(insertion_index, *GetImpl(parameters, entry));
+      uint32_t entry = GetEntryForIndexImpl(isolate, *receiver, parameters, i,
+                                            ALL_PROPERTIES);
+      if (entry != kMaxUInt32 && HasEntryImpl(isolate, parameters, entry)) {
+        elements->set(insertion_index, *GetImpl(isolate, parameters, entry));
       } else {
-        elements->set_the_hole(insertion_index);
+        elements->set_the_hole(isolate, insertion_index);
       }
       insertion_index++;
     }
@@ -3282,14 +3599,15 @@ class FastSloppyArgumentsElementsAccessor
                       Handle<Object> value, PropertyAttributes attributes,
                       uint32_t new_capacity) {
     DCHECK_EQ(NONE, attributes);
-    Handle<FixedArray> parameter_map(FixedArray::cast(object->elements()));
-    Handle<FixedArrayBase> old_elements(
-        FixedArrayBase::cast(parameter_map->get(1)));
-    if (old_elements->IsSeededNumberDictionary() ||
-        static_cast<uint32_t>(old_elements->length()) < new_capacity) {
+    Isolate* isolate = object->GetIsolate();
+    Handle<SloppyArgumentsElements> elements(
+        SloppyArgumentsElements::cast(object->elements()), isolate);
+    Handle<FixedArray> old_arguments(elements->arguments(), isolate);
+    if (old_arguments->IsSeededNumberDictionary() ||
+        static_cast<uint32_t>(old_arguments->length()) < new_capacity) {
       GrowCapacityAndConvertImpl(object, new_capacity);
     }
-    FixedArray* arguments = FixedArray::cast(parameter_map->get(1));
+    FixedArray* arguments = elements->arguments();
     // For fast holey objects, the entry equals the index. The code above made
     // sure that there's enough space to store the value. We cannot convert
     // index to entry explicitly since the slot still contains the hole, so the
@@ -3304,8 +3622,9 @@ class FastSloppyArgumentsElementsAccessor
                               PropertyAttributes attributes) {
     Handle<SeededNumberDictionary> dictionary =
         JSObject::NormalizeElements(object);
-    FixedArray::cast(*store)->set(1, *dictionary);
-    uint32_t length = static_cast<uint32_t>(store->length()) - 2;
+    SloppyArgumentsElements* elements = SloppyArgumentsElements::cast(*store);
+    elements->set_arguments(*dictionary);
+    uint32_t length = elements->parameter_map_length();
     if (entry >= length) {
       entry = dictionary->FindEntry(entry - length) + length;
     }
@@ -3330,19 +3649,22 @@ class FastSloppyArgumentsElementsAccessor
 
   static void GrowCapacityAndConvertImpl(Handle<JSObject> object,
                                          uint32_t capacity) {
-    Handle<FixedArray> parameter_map(FixedArray::cast(object->elements()));
-    Handle<FixedArray> old_elements(FixedArray::cast(parameter_map->get(1)));
+    Isolate* isolate = object->GetIsolate();
+    Handle<SloppyArgumentsElements> elements(
+        SloppyArgumentsElements::cast(object->elements()), isolate);
+    Handle<FixedArray> old_arguments(FixedArray::cast(elements->arguments()),
+                                     isolate);
     ElementsKind from_kind = object->GetElementsKind();
     // This method should only be called if there's a reason to update the
     // elements.
     DCHECK(from_kind == SLOW_SLOPPY_ARGUMENTS_ELEMENTS ||
-           static_cast<uint32_t>(old_elements->length()) < capacity);
-    Handle<FixedArrayBase> elements =
-        ConvertElementsWithCapacity(object, old_elements, from_kind, capacity);
+           static_cast<uint32_t>(old_arguments->length()) < capacity);
+    Handle<FixedArrayBase> arguments =
+        ConvertElementsWithCapacity(object, old_arguments, from_kind, capacity);
     Handle<Map> new_map = JSObject::GetElementsTransitionMap(
         object, FAST_SLOPPY_ARGUMENTS_ELEMENTS);
     JSObject::MigrateToMap(object, new_map);
-    parameter_map->set(1, *elements);
+    elements->set_arguments(FixedArray::cast(*arguments));
     JSObject::ValidateElements(object);
   }
 };
@@ -3356,6 +3678,11 @@ class StringWrapperElementsAccessor
     USE(KindTraits::Kind);
   }
 
+  static Handle<Object> GetInternalImpl(Handle<JSObject> holder,
+                                        uint32_t entry) {
+    return GetImpl(holder, entry);
+  }
+
   static Handle<Object> GetImpl(Handle<JSObject> holder, uint32_t entry) {
     Isolate* isolate = holder->GetIsolate();
     Handle<String> string(GetString(*holder), isolate);
@@ -3364,7 +3691,14 @@ class StringWrapperElementsAccessor
       return isolate->factory()->LookupSingleCharacterStringFromCode(
           String::Flatten(string)->Get(entry));
     }
-    return BackingStoreAccessor::GetImpl(holder, entry - length);
+    return BackingStoreAccessor::GetImpl(isolate, holder->elements(),
+                                         entry - length);
+  }
+
+  static Handle<Object> GetImpl(Isolate* isolate, FixedArrayBase* elements,
+                                uint32_t entry) {
+    UNREACHABLE();
+    return Handle<Object>();
   }
 
   static PropertyDetails GetDetailsImpl(JSObject* holder, uint32_t entry) {
@@ -3372,19 +3706,18 @@ class StringWrapperElementsAccessor
     if (entry < length) {
       PropertyAttributes attributes =
           static_cast<PropertyAttributes>(READ_ONLY | DONT_DELETE);
-      return PropertyDetails(attributes, v8::internal::DATA, 0,
-                             PropertyCellType::kNoCell);
+      return PropertyDetails(kData, attributes, 0, PropertyCellType::kNoCell);
     }
     return BackingStoreAccessor::GetDetailsImpl(holder, entry - length);
   }
 
-  static uint32_t GetEntryForIndexImpl(JSObject* holder,
+  static uint32_t GetEntryForIndexImpl(Isolate* isolate, JSObject* holder,
                                        FixedArrayBase* backing_store,
                                        uint32_t index, PropertyFilter filter) {
     uint32_t length = static_cast<uint32_t>(GetString(holder)->length());
     if (index < length) return index;
     uint32_t backing_store_entry = BackingStoreAccessor::GetEntryForIndexImpl(
-        holder, backing_store, index, filter);
+        isolate, holder, backing_store, index, filter);
     if (backing_store_entry == kMaxUInt32) return kMaxUInt32;
     DCHECK(backing_store_entry < kMaxUInt32 - length);
     return backing_store_entry + length;
@@ -3491,6 +3824,13 @@ class StringWrapperElementsAccessor
     }
   }
 
+  static uint32_t NumberOfElementsImpl(JSObject* object,
+                                       FixedArrayBase* backing_store) {
+    uint32_t length = GetString(object)->length();
+    return length +
+           BackingStoreAccessor::NumberOfElementsImpl(object, backing_store);
+  }
+
  private:
   static String* GetString(JSObject* holder) {
     DCHECK(holder->IsJSValue());
@@ -3581,9 +3921,9 @@ MaybeHandle<Object> ArrayConstructInitializeElements(Handle<JSArray> array,
     JSArray::Initialize(array, JSArray::kPreallocatedArrayElements);
     return array;
 
-  } else if (args->length() == 1 && args->at<Object>(0)->IsNumber()) {
+  } else if (args->length() == 1 && args->at(0)->IsNumber()) {
     uint32_t length;
-    if (!args->at<Object>(0)->ToArrayLength(&length)) {
+    if (!args->at(0)->ToArrayLength(&length)) {
       return ThrowArrayLengthRangeError(array->GetIsolate());
     }
 

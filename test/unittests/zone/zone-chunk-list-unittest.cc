@@ -4,7 +4,6 @@
 
 #include "src/zone/zone-chunk-list.h"
 
-#include "src/list-inl.h"
 #include "src/zone/accounting-allocator.h"
 #include "src/zone/zone.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -93,7 +92,7 @@ TEST(ZoneChunkList, RewindTest) {
     count++;
   }
 
-  EXPECT_EQ(count, 42);
+  EXPECT_EQ(count, 42u);
   EXPECT_EQ(count, zone_chunk_list.size());
 
   zone_chunk_list.Rewind(0);
@@ -105,7 +104,7 @@ TEST(ZoneChunkList, RewindTest) {
     count++;
   }
 
-  EXPECT_EQ(count, 0);
+  EXPECT_EQ(count, 0u);
   EXPECT_EQ(count, zone_chunk_list.size());
 
   zone_chunk_list.Rewind(100);
@@ -117,7 +116,7 @@ TEST(ZoneChunkList, RewindTest) {
     count++;
   }
 
-  EXPECT_EQ(count, 0);
+  EXPECT_EQ(count, 0u);
   EXPECT_EQ(count, zone_chunk_list.size());
 }
 
@@ -137,7 +136,7 @@ TEST(ZoneChunkList, FindTest) {
 
   *zone_chunk_list.Find(index) = 42;
 
-  EXPECT_EQ(*zone_chunk_list.Find(index), 42);
+  EXPECT_EQ(*zone_chunk_list.Find(index), 42u);
 }
 
 TEST(ZoneChunkList, CopyToTest) {

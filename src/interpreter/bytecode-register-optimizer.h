@@ -7,7 +7,7 @@
 
 #include "src/base/compiler-specific.h"
 #include "src/globals.h"
-#include "src/interpreter/bytecode-pipeline.h"
+#include "src/interpreter/bytecode-register-allocator.h"
 
 namespace v8 {
 namespace internal {
@@ -21,32 +21,73 @@ class V8_EXPORT_PRIVATE BytecodeRegisterOptimizer final
     : public NON_EXPORTED_BASE(BytecodeRegisterAllocator::Observer),
       public NON_EXPORTED_BASE(ZoneObject) {
  public:
+  class BytecodeWriter {
+   public:
+    BytecodeWriter() {}
+    virtual ~BytecodeWriter() {}
+
+    // Called to emit a register transfer bytecode.
+    virtual void EmitLdar(Register input) = 0;
+    virtual void EmitStar(Register output) = 0;
+    virtual void EmitMov(Register input, Register output) = 0;
+
+   private:
+    DISALLOW_COPY_AND_ASSIGN(BytecodeWriter);
+  };
+
   BytecodeRegisterOptimizer(Zone* zone,
                             BytecodeRegisterAllocator* register_allocator,
                             int fixed_registers_count, int parameter_count,
-                            BytecodePipelineStage* next_stage);
+                            BytecodeWriter* bytecode_writer);
   virtual ~BytecodeRegisterOptimizer() {}
 
   // Perform explicit register transfer operations.
-  void DoLdar(Register input, BytecodeSourceInfo source_info) {
+  void DoLdar(Register input) {
+    // TODO(rmcilroy): Avoid treating accumulator loads as clobbering the
+    // accumulator until the value is actually materialized in the accumulator.
     RegisterInfo* input_info = GetRegisterInfo(input);
-    RegisterTransfer(input_info, accumulator_info_, source_info);
+    RegisterTransfer(input_info, accumulator_info_);
   }
-  void DoStar(Register output, BytecodeSourceInfo source_info) {
+  void DoStar(Register output) {
     RegisterInfo* output_info = GetRegisterInfo(output);
-    RegisterTransfer(accumulator_info_, output_info, source_info);
+    RegisterTransfer(accumulator_info_, output_info);
   }
-  void DoMov(Register input, Register output, BytecodeSourceInfo source_info) {
+  void DoMov(Register input, Register output) {
     RegisterInfo* input_info = GetRegisterInfo(input);
     RegisterInfo* output_info = GetRegisterInfo(output);
-    RegisterTransfer(input_info, output_info, source_info);
+    RegisterTransfer(input_info, output_info);
   }
 
   // Materialize all live registers and flush equivalence sets.
   void Flush();
 
   // Prepares for |bytecode|.
-  void PrepareForBytecode(Bytecode bytecode);
+  template <Bytecode bytecode, AccumulatorUse accumulator_use>
+  INLINE(void PrepareForBytecode()) {
+    if (Bytecodes::IsJump(bytecode) || bytecode == Bytecode::kDebugger ||
+        bytecode == Bytecode::kSuspendGenerator) {
+      // All state must be flushed before emitting
+      // - a jump bytecode (as the register equivalents at the jump target
+      // aren't
+      //   known.
+      // - a call to the debugger (as it can manipulate locals and parameters),
+      // - a generator suspend (as this involves saving all registers).
+      Flush();
+    }
+
+    // Materialize the accumulator if it is read by the bytecode. The
+    // accumulator is special and no other register can be materialized
+    // in it's place.
+    if (BytecodeOperands::ReadsAccumulator(accumulator_use)) {
+      Materialize(accumulator_info_);
+    }
+
+    // Materialize an equivalent to the accumulator if it will be
+    // clobbered when the bytecode is dispatched.
+    if (BytecodeOperands::WritesAccumulator(accumulator_use)) {
+      PrepareOutputRegister(accumulator_);
+    }
+  }
 
   // Prepares |reg| for being used as an output operand.
   void PrepareOutputRegister(Register reg);
@@ -73,20 +114,11 @@ class V8_EXPORT_PRIVATE BytecodeRegisterOptimizer final
   void RegisterListAllocateEvent(RegisterList reg_list) override;
   void RegisterListFreeEvent(RegisterList reg) override;
 
-  // Update internal state for register transfer from |input| to
-  // |output| using |source_info| as source position information if
-  // any bytecodes are emitted due to transfer.
-  void RegisterTransfer(RegisterInfo* input, RegisterInfo* output,
-                        BytecodeSourceInfo source_info);
+  // Update internal state for register transfer from |input| to |output|
+  void RegisterTransfer(RegisterInfo* input, RegisterInfo* output);
 
   // Emit a register transfer bytecode from |input| to |output|.
-  void OutputRegisterTransfer(
-      RegisterInfo* input, RegisterInfo* output,
-      BytecodeSourceInfo source_info = BytecodeSourceInfo());
-
-  // Emits a Nop to preserve source position information in the
-  // bytecode pipeline.
-  void EmitNopForSourceInfo(BytecodeSourceInfo source_info) const;
+  void OutputRegisterTransfer(RegisterInfo* input, RegisterInfo* output);
 
   void CreateMaterializedEquivalent(RegisterInfo* info);
   RegisterInfo* GetMaterializedEquivalent(RegisterInfo* info);
@@ -137,7 +169,8 @@ class V8_EXPORT_PRIVATE BytecodeRegisterOptimizer final
 
   uint32_t NextEquivalenceId() {
     equivalence_id_++;
-    CHECK_NE(equivalence_id_, kInvalidEquivalenceId);
+    // TODO(rmcilroy): use the same type for these and remove static_cast.
+    CHECK_NE(static_cast<size_t>(equivalence_id_), kInvalidEquivalenceId);
     return equivalence_id_;
   }
 
@@ -155,7 +188,7 @@ class V8_EXPORT_PRIVATE BytecodeRegisterOptimizer final
   // Counter for equivalence sets identifiers.
   int equivalence_id_;
 
-  BytecodePipelineStage* next_stage_;
+  BytecodeWriter* bytecode_writer_;
   bool flush_required_;
   Zone* zone_;
 

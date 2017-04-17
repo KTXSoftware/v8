@@ -2,7 +2,7 @@ Name: inspector protocol
 Short Name: inspector_protocol
 URL: https://chromium.googlesource.com/deps/inspector_protocol/
 Version: 0
-Revision: cf45a6e89b17cdc9eeacdef4c003fcc55f7ec2a0
+Revision: 1a7cbe8ba8fa0d622586f549a97c73d9b52efbea
 License: BSD
 License File: LICENSE
 Security Critical: no
@@ -14,5 +14,3 @@ description.
 Local modifications:
 - This only includes the lib/ and templates/ directories, scripts, build
   and the LICENSE files.
-- New style domains [ "Schema", "Console", "Profiler", "HeapProfiler",
-  "Runtime" ] are added in CodeGenerator.py.

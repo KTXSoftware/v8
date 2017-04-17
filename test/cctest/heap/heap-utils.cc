@@ -38,8 +38,7 @@ std::vector<Handle<FixedArray>> FillOldSpacePageWithFixedArrays(Heap* heap,
   const int kArrayLen = heap::FixedArrayLenFromSize(kArraySize);
   CHECK_EQ(Page::kAllocatableMemory % kArraySize, 0);
   Handle<FixedArray> array;
-  for (size_t allocated = 0;
-       allocated != (Page::kAllocatableMemory - remainder);
+  for (int allocated = 0; allocated != (Page::kAllocatableMemory - remainder);
        allocated += array->Size()) {
     if (allocated == (Page::kAllocatableMemory - kArraySize)) {
       array = isolate->factory()->NewFixedArray(
@@ -143,6 +142,7 @@ void SimulateFullSpace(v8::internal::NewSpace* space,
 }
 
 void SimulateIncrementalMarking(i::Heap* heap, bool force_completion) {
+  CHECK(FLAG_incremental_marking);
   i::IncrementalMarking* marking = heap->incremental_marking();
   i::MarkCompactCollector* collector = heap->mark_compact_collector();
   if (collector->sweeping_in_progress()) {

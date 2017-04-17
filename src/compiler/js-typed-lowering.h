@@ -52,24 +52,29 @@ class V8_EXPORT_PRIVATE JSTypedLowering final
   Reduction ReduceJSLoadNamed(Node* node);
   Reduction ReduceJSLoadProperty(Node* node);
   Reduction ReduceJSStoreProperty(Node* node);
-  Reduction ReduceJSInstanceOf(Node* node);
+  Reduction ReduceJSOrdinaryHasInstance(Node* node);
   Reduction ReduceJSLoadContext(Node* node);
   Reduction ReduceJSStoreContext(Node* node);
-  Reduction ReduceJSEqualTypeOf(Node* node, bool invert);
-  Reduction ReduceJSEqual(Node* node, bool invert);
-  Reduction ReduceJSStrictEqual(Node* node, bool invert);
+  Reduction ReduceJSLoadModule(Node* node);
+  Reduction ReduceJSStoreModule(Node* node);
+  Reduction ReduceJSEqual(Node* node);
+  Reduction ReduceJSStrictEqual(Node* node);
   Reduction ReduceJSToBoolean(Node* node);
   Reduction ReduceJSToInteger(Node* node);
   Reduction ReduceJSToLength(Node* node);
+  Reduction ReduceJSToName(Node* node);
   Reduction ReduceJSToNumberInput(Node* input);
   Reduction ReduceJSToNumber(Node* node);
   Reduction ReduceJSToStringInput(Node* input);
   Reduction ReduceJSToString(Node* node);
   Reduction ReduceJSToObject(Node* node);
   Reduction ReduceJSConvertReceiver(Node* node);
-  Reduction ReduceJSCallConstruct(Node* node);
-  Reduction ReduceJSCallFunction(Node* node);
+  Reduction ReduceJSConstruct(Node* node);
+  Reduction ReduceJSCallForwardVarargs(Node* node);
+  Reduction ReduceJSCall(Node* node);
   Reduction ReduceJSForInNext(Node* node);
+  Reduction ReduceJSLoadMessage(Node* node);
+  Reduction ReduceJSStoreMessage(Node* node);
   Reduction ReduceJSGeneratorStore(Node* node);
   Reduction ReduceJSGeneratorRestoreContinuation(Node* node);
   Reduction ReduceJSGeneratorRestoreRegister(Node* node);
@@ -78,6 +83,10 @@ class V8_EXPORT_PRIVATE JSTypedLowering final
   Reduction ReduceInt32Binop(Node* node);
   Reduction ReduceUI32Shift(Node* node, Signedness signedness);
   Reduction ReduceCreateConsString(Node* node);
+  Reduction ReduceSpeculativeNumberAdd(Node* node);
+  Reduction ReduceSpeculativeNumberMultiply(Node* node);
+  Reduction ReduceSpeculativeNumberBinop(Node* node);
+  Reduction ReduceSpeculativeNumberComparison(Node* node);
 
   Factory* factory() const;
   Graph* graph() const;
@@ -93,7 +102,7 @@ class V8_EXPORT_PRIVATE JSTypedLowering final
   Flags flags_;
   JSGraph* jsgraph_;
   Type* shifted_int32_ranges_[4];
-  Type* const the_hole_type_;
+  Type* pointer_comparable_type_;
   TypeCache const& type_cache_;
 };
 

@@ -8,7 +8,6 @@
 #include "include/v8.h"
 #include "src/allocation.h"
 #include "src/globals.h"
-#include "src/handles.h"
 #include "src/property-details.h"
 
 namespace v8 {
@@ -16,6 +15,8 @@ namespace internal {
 
 // Forward declarations.
 class AccessorInfo;
+template <typename T>
+class Handle;
 
 // The list of accessor descriptors. This is a second-order macro
 // taking a macro to be applied to all accessor descriptor names.
@@ -37,14 +38,12 @@ class AccessorInfo;
   V(ScriptEvalFromScriptPosition) \
   V(ScriptEvalFromFunctionName)   \
   V(ScriptId)                     \
-  V(ScriptLineEnds)               \
   V(ScriptLineOffset)             \
   V(ScriptName)                   \
   V(ScriptSource)                 \
   V(ScriptType)                   \
   V(ScriptSourceUrl)              \
   V(ScriptSourceMappingUrl)       \
-  V(ScriptIsEmbedderDebugScript)  \
   V(StringLength)
 
 #define ACCESSOR_SETTER_LIST(V) \

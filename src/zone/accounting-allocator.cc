@@ -59,7 +59,8 @@ void AccountingAllocator::ConfigureSegmentPool(const size_t max_pool_size) {
   size_t total_size = fits_fully * full_size;
 
   for (size_t power = 0; power < kNumberBuckets; ++power) {
-    if (total_size + (size_t(1) << power) <= max_pool_size) {
+    if (total_size + (size_t(1) << (power + kMinSegmentSizePower)) <=
+        max_pool_size) {
       unused_segments_max_sizes_[power] = fits_fully + 1;
       total_size += size_t(1) << power;
     } else {
@@ -72,7 +73,9 @@ Segment* AccountingAllocator::GetSegment(size_t bytes) {
   Segment* result = GetSegmentFromPool(bytes);
   if (result == nullptr) {
     result = AllocateSegment(bytes);
-    result->Initialize(bytes);
+    if (result != nullptr) {
+      result->Initialize(bytes);
+    }
   }
 
   return result;

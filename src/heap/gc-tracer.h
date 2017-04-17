@@ -10,7 +10,7 @@
 #include "src/base/ring-buffer.h"
 #include "src/counters.h"
 #include "src/globals.h"
-#include "testing/gtest/include/gtest/gtest_prod.h"
+#include "testing/gtest/include/gtest/gtest_prod.h"  // nogncheck
 
 namespace v8 {
 namespace internal {
@@ -31,17 +31,20 @@ enum ScavengeSpeedMode { kForAllObjects, kForSurvivedObjects };
   F(MC_INCREMENTAL_WRAPPER_TRACING)                                \
   F(MC_INCREMENTAL_FINALIZE)                                       \
   F(MC_INCREMENTAL_FINALIZE_BODY)                                  \
-  F(MC_INCREMENTAL_FINALIZE_OBJECT_GROUPING)                       \
   F(MC_INCREMENTAL_EXTERNAL_EPILOGUE)                              \
   F(MC_INCREMENTAL_EXTERNAL_PROLOGUE)
 
 #define TRACER_SCOPES(F)                      \
   INCREMENTAL_SCOPES(F)                       \
-  F(EXTERNAL_WEAK_GLOBAL_HANDLES)             \
+  F(HEAP_EPILOGUE)                            \
+  F(HEAP_EPILOGUE_REDUCE_NEW_SPACE)           \
+  F(HEAP_EXTERNAL_EPILOGUE)                   \
+  F(HEAP_EXTERNAL_PROLOGUE)                   \
+  F(HEAP_EXTERNAL_WEAK_GLOBAL_HANDLES)        \
+  F(HEAP_PROLOGUE)                            \
   F(MC_CLEAR)                                 \
   F(MC_CLEAR_CODE_FLUSH)                      \
   F(MC_CLEAR_DEPENDENT_CODE)                  \
-  F(MC_CLEAR_GLOBAL_HANDLES)                  \
   F(MC_CLEAR_MAPS)                            \
   F(MC_CLEAR_SLOTS_BUFFER)                    \
   F(MC_CLEAR_STORE_BUFFER)                    \
@@ -54,12 +57,13 @@ enum ScavengeSpeedMode { kForAllObjects, kForSurvivedObjects };
   F(MC_EVACUATE_CANDIDATES)                   \
   F(MC_EVACUATE_CLEAN_UP)                     \
   F(MC_EVACUATE_COPY)                         \
+  F(MC_EVACUATE_EPILOGUE)                     \
+  F(MC_EVACUATE_PROLOGUE)                     \
+  F(MC_EVACUATE_REBALANCE)                    \
   F(MC_EVACUATE_UPDATE_POINTERS)              \
   F(MC_EVACUATE_UPDATE_POINTERS_TO_EVACUATED) \
   F(MC_EVACUATE_UPDATE_POINTERS_TO_NEW)       \
   F(MC_EVACUATE_UPDATE_POINTERS_WEAK)         \
-  F(MC_EXTERNAL_EPILOGUE)                     \
-  F(MC_EXTERNAL_PROLOGUE)                     \
   F(MC_FINISH)                                \
   F(MC_MARK)                                  \
   F(MC_MARK_FINISH_INCREMENTAL)               \
@@ -73,16 +77,20 @@ enum ScavengeSpeedMode { kForAllObjects, kForSurvivedObjects };
   F(MC_MARK_WRAPPER_EPILOGUE)                 \
   F(MC_MARK_WRAPPER_PROLOGUE)                 \
   F(MC_MARK_WRAPPER_TRACING)                  \
-  F(MC_MARK_OBJECT_GROUPING)                  \
   F(MC_PROLOGUE)                              \
   F(MC_SWEEP)                                 \
   F(MC_SWEEP_CODE)                            \
   F(MC_SWEEP_MAP)                             \
   F(MC_SWEEP_OLD)                             \
+  F(MC_MINOR_MC)                              \
+  F(MINOR_MC_MARK)                            \
+  F(MINOR_MC_MARK_CODE_FLUSH_CANDIDATES)      \
+  F(MINOR_MC_MARK_GLOBAL_HANDLES)             \
+  F(MINOR_MC_MARK_OLD_TO_NEW_POINTERS)        \
+  F(MINOR_MC_MARK_ROOTS)                      \
+  F(MINOR_MC_MARK_WEAK)                       \
   F(SCAVENGER_CODE_FLUSH_CANDIDATES)          \
-  F(SCAVENGER_EXTERNAL_EPILOGUE)              \
-  F(SCAVENGER_EXTERNAL_PROLOGUE)              \
-  F(SCAVENGER_OBJECT_GROUPS)                  \
+  F(SCAVENGER_EVACUATE)                       \
   F(SCAVENGER_OLD_TO_NEW_POINTERS)            \
   F(SCAVENGER_ROOTS)                          \
   F(SCAVENGER_SCAVENGE)                       \
@@ -155,7 +163,8 @@ class V8_EXPORT_PRIVATE GCTracer {
       SCAVENGER = 0,
       MARK_COMPACTOR = 1,
       INCREMENTAL_MARK_COMPACTOR = 2,
-      START = 3
+      MINOR_MARK_COMPACTOR = 3,
+      START = 4
     };
 
     Event(Type type, GarbageCollectionReason gc_reason,
@@ -229,6 +238,9 @@ class V8_EXPORT_PRIVATE GCTracer {
 
   // Stop collecting data and print results.
   void Stop(GarbageCollector collector);
+
+  void NotifyYoungGenerationHandling(
+      YoungGenerationHandling young_generation_handling);
 
   // Sample and accumulate bytes allocated since the last GC.
   void SampleAllocation(double current_ms, size_t new_space_counter_bytes,
@@ -363,13 +375,11 @@ class V8_EXPORT_PRIVATE GCTracer {
   void PRINTF_FORMAT(2, 3) Output(const char* format, ...) const;
 
   double TotalExternalTime() const {
-    return current_.scopes[Scope::EXTERNAL_WEAK_GLOBAL_HANDLES] +
-           current_.scopes[Scope::MC_EXTERNAL_EPILOGUE] +
-           current_.scopes[Scope::MC_EXTERNAL_PROLOGUE] +
+    return current_.scopes[Scope::HEAP_EXTERNAL_WEAK_GLOBAL_HANDLES] +
+           current_.scopes[Scope::HEAP_EXTERNAL_EPILOGUE] +
+           current_.scopes[Scope::HEAP_EXTERNAL_PROLOGUE] +
            current_.scopes[Scope::MC_INCREMENTAL_EXTERNAL_EPILOGUE] +
-           current_.scopes[Scope::MC_INCREMENTAL_EXTERNAL_PROLOGUE] +
-           current_.scopes[Scope::SCAVENGER_EXTERNAL_EPILOGUE] +
-           current_.scopes[Scope::SCAVENGER_EXTERNAL_PROLOGUE];
+           current_.scopes[Scope::MC_INCREMENTAL_EXTERNAL_PROLOGUE];
   }
 
   // Pointer to the heap that owns this tracer.
@@ -418,8 +428,8 @@ class V8_EXPORT_PRIVATE GCTracer {
   // Separate timer used for --runtime_call_stats
   RuntimeCallTimer timer_;
 
-  base::RingBuffer<BytesAndDuration> recorded_scavenges_total_;
-  base::RingBuffer<BytesAndDuration> recorded_scavenges_survived_;
+  base::RingBuffer<BytesAndDuration> recorded_minor_gcs_total_;
+  base::RingBuffer<BytesAndDuration> recorded_minor_gcs_survived_;
   base::RingBuffer<BytesAndDuration> recorded_compactions_;
   base::RingBuffer<BytesAndDuration> recorded_incremental_mark_compacts_;
   base::RingBuffer<BytesAndDuration> recorded_mark_compacts_;

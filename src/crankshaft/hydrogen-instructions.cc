@@ -7,10 +7,12 @@
 #include "src/base/bits.h"
 #include "src/base/ieee754.h"
 #include "src/base/safe_math.h"
+#include "src/codegen.h"
 #include "src/crankshaft/hydrogen-infer-representation.h"
 #include "src/double.h"
 #include "src/elements.h"
 #include "src/factory.h"
+#include "src/objects-inl.h"
 
 #if V8_TARGET_ARCH_IA32
 #include "src/crankshaft/ia32/lithium-ia32.h"  // NOLINT
@@ -44,6 +46,21 @@ namespace internal {
 HYDROGEN_CONCRETE_INSTRUCTION_LIST(DEFINE_COMPILE)
 #undef DEFINE_COMPILE
 
+Representation RepresentationFromMachineType(MachineType type) {
+  if (type == MachineType::Int32()) {
+    return Representation::Integer32();
+  }
+
+  if (type == MachineType::TaggedSigned()) {
+    return Representation::Smi();
+  }
+
+  if (type == MachineType::Pointer()) {
+    return Representation::External();
+  }
+
+  return Representation::Tagged();
+}
 
 Isolate* HValue::isolate() const {
   DCHECK(block() != NULL);
@@ -1009,13 +1026,11 @@ std::ostream& HCallRuntime::PrintDataTo(std::ostream& os) const {  // NOLINT
   return os << "#" << argument_count();
 }
 
-
 std::ostream& HClassOfTestAndBranch::PrintDataTo(
     std::ostream& os) const {  // NOLINT
   return os << "class_of_test(" << NameOf(value()) << ", \""
             << class_name()->ToCString().get() << "\")";
 }
-
 
 std::ostream& HWrapReceiver::PrintDataTo(std::ostream& os) const {  // NOLINT
   return os << NameOf(receiver()) << " " << NameOf(function());
@@ -1056,23 +1071,21 @@ std::ostream& HReturn::PrintDataTo(std::ostream& os) const {  // NOLINT
 
 
 Representation HBranch::observed_input_representation(int index) {
-  if (expected_input_types_.Contains(ToBooleanICStub::NULL_TYPE) ||
-      expected_input_types_.Contains(ToBooleanICStub::SPEC_OBJECT) ||
-      expected_input_types_.Contains(ToBooleanICStub::STRING) ||
-      expected_input_types_.Contains(ToBooleanICStub::SYMBOL) ||
-      expected_input_types_.Contains(ToBooleanICStub::SIMD_VALUE)) {
+  if (expected_input_types_ &
+      (ToBooleanHint::kNull | ToBooleanHint::kReceiver |
+       ToBooleanHint::kString | ToBooleanHint::kSymbol)) {
     return Representation::Tagged();
   }
-  if (expected_input_types_.Contains(ToBooleanICStub::UNDEFINED)) {
-    if (expected_input_types_.Contains(ToBooleanICStub::HEAP_NUMBER)) {
+  if (expected_input_types_ & ToBooleanHint::kUndefined) {
+    if (expected_input_types_ & ToBooleanHint::kHeapNumber) {
       return Representation::Double();
     }
     return Representation::Tagged();
   }
-  if (expected_input_types_.Contains(ToBooleanICStub::HEAP_NUMBER)) {
+  if (expected_input_types_ & ToBooleanHint::kHeapNumber) {
     return Representation::Double();
   }
-  if (expected_input_types_.Contains(ToBooleanICStub::SMI)) {
+  if (expected_input_types_ & ToBooleanHint::kSmallInteger) {
     return Representation::Smi();
   }
   return Representation::None();
@@ -1230,17 +1243,6 @@ String* TypeOfString(HConstant* constant, Isolate* isolate) {
     }
     case SYMBOL_TYPE:
       return heap->symbol_string();
-    case SIMD128_VALUE_TYPE: {
-      Unique<Map> map = constant->ObjectMap();
-#define SIMD128_TYPE(TYPE, Type, type, lane_count, lane_type) \
-  if (map.IsKnownGlobal(heap->type##_map())) {                \
-    return heap->type##_string();                             \
-  }
-      SIMD128_TYPES(SIMD128_TYPE)
-#undef SIMD128_TYPE
-      UNREACHABLE();
-      return nullptr;
-    }
     default:
       if (constant->IsUndetectable()) return heap->undefined_string();
       if (constant->IsCallable()) return heap->function_string();
@@ -2163,6 +2165,11 @@ HConstant::HConstant(Special special)
                  InstanceTypeField::encode(kUnknownInstanceType)),
       int32_value_(0) {
   DCHECK_EQ(kHoleNaN, special);
+  // Manipulating the signaling NaN used for the hole in C++, e.g. with bit_cast
+  // will change its value on ia32 (the x87 stack is used to return values
+  // and stores to the stack silently clear the signalling bit).
+  // Therefore we have to use memcpy for initializing |double_value_| with
+  // kHoleNanInt64 here.
   std::memcpy(&double_value_, &kHoleNanInt64, sizeof(double_value_));
   Initialize(Representation::Double());
 }
@@ -3572,7 +3579,10 @@ HInstruction* HDiv::New(Isolate* isolate, Zone* zone, HValue* context,
     HConstant* c_left = HConstant::cast(left);
     HConstant* c_right = HConstant::cast(right);
     if ((c_left->HasNumberValue() && c_right->HasNumberValue())) {
-      if (c_right->DoubleValue() != 0) {
+      if (std::isnan(c_left->DoubleValue()) ||
+          std::isnan(c_right->DoubleValue())) {
+        return H_CONSTANT_DOUBLE(std::numeric_limits<double>::quiet_NaN());
+      } else if (c_right->DoubleValue() != 0) {
         double double_res = c_left->DoubleValue() / c_right->DoubleValue();
         if (IsInt32Double(double_res)) {
           return H_CONSTANT_INT(double_res);

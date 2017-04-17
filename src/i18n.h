@@ -6,7 +6,8 @@
 #ifndef V8_I18N_H_
 #define V8_I18N_H_
 
-#include "src/handles.h"
+#include "src/base/timezone-cache.h"
+#include "src/objects.h"
 #include "unicode/uversion.h"
 
 namespace U_ICU_NAMESPACE {
@@ -14,26 +15,14 @@ class BreakIterator;
 class Collator;
 class DecimalFormat;
 class SimpleDateFormat;
+class TimeZone;
 }
 
 namespace v8 {
 namespace internal {
 
-// Forward declarations.
-class ObjectTemplateInfo;
-
-class I18N {
- public:
-  // Creates an ObjectTemplate with one internal field.
-  static Handle<ObjectTemplateInfo> GetTemplate(Isolate* isolate);
-
-  // Creates an ObjectTemplate with two internal fields.
-  static Handle<ObjectTemplateInfo> GetTemplate2(Isolate* isolate);
-
- private:
-  I18N();
-};
-
+template <typename T>
+class Handle;
 
 class DateFormat {
  public:
@@ -52,6 +41,10 @@ class DateFormat {
   // Release memory we allocated for the DateFormat once the JS object that
   // holds the pointer gets garbage collected.
   static void DeleteDateFormat(const v8::WeakCallbackInfo<void>& data);
+
+  // Layout description.
+  static const int kSimpleDateFormat = JSObject::kHeaderSize;
+  static const int kSize = kSimpleDateFormat + kPointerSize;
 
  private:
   DateFormat();
@@ -76,6 +69,10 @@ class NumberFormat {
   // holds the pointer gets garbage collected.
   static void DeleteNumberFormat(const v8::WeakCallbackInfo<void>& data);
 
+  // Layout description.
+  static const int kDecimalFormat = JSObject::kHeaderSize;
+  static const int kSize = kDecimalFormat + kPointerSize;
+
  private:
   NumberFormat();
 };
@@ -98,11 +95,15 @@ class Collator {
   // the pointer gets garbage collected.
   static void DeleteCollator(const v8::WeakCallbackInfo<void>& data);
 
+  // Layout description.
+  static const int kCollator = JSObject::kHeaderSize;
+  static const int kSize = kCollator + kPointerSize;
+
  private:
   Collator();
 };
 
-class BreakIterator {
+class V8BreakIterator {
  public:
   // Create a BreakIterator for the specificied locale and options. Returns the
   // resolved settings for the locale / options.
@@ -120,8 +121,51 @@ class BreakIterator {
   // holds the pointer gets garbage collected.
   static void DeleteBreakIterator(const v8::WeakCallbackInfo<void>& data);
 
+  // Layout description.
+  static const int kBreakIterator = JSObject::kHeaderSize;
+  static const int kUnicodeString = kBreakIterator + kPointerSize;
+  static const int kSize = kUnicodeString + kPointerSize;
+
  private:
-  BreakIterator();
+  V8BreakIterator();
+};
+
+const UChar* GetUCharBufferFromFlat(const String::FlatContent& flat,
+                                    std::unique_ptr<uc16[]>* dest,
+                                    int32_t length);
+MUST_USE_RESULT Object* LocaleConvertCase(Handle<String> s, Isolate* isolate,
+                                          bool is_to_upper, const char* lang);
+MUST_USE_RESULT Object* ConvertToLower(Handle<String> s, Isolate* isolate);
+MUST_USE_RESULT Object* ConvertToUpper(Handle<String> s, Isolate* isolate);
+MUST_USE_RESULT Object* ConvertCase(Handle<String> s, bool is_upper,
+                                    Isolate* isolate);
+
+// ICUTimezoneCache calls out to ICU for TimezoneCache
+// functionality in a straightforward way.
+class ICUTimezoneCache : public base::TimezoneCache {
+ public:
+  ICUTimezoneCache();
+
+  ~ICUTimezoneCache() override;
+
+  const char* LocalTimezone(double time_ms) override;
+
+  double DaylightSavingsOffset(double time_ms) override;
+
+  double LocalTimeOffset() override;
+
+  void Clear() override;
+
+ private:
+  icu::TimeZone* GetTimeZone();
+
+  bool GetOffsets(double time_ms, int32_t* raw_offset, int32_t* dst_offset);
+
+  icu::TimeZone* timezone_;
+
+  static const int32_t kMaxTimezoneChars = 100;
+  char timezone_name_[kMaxTimezoneChars];
+  char dst_timezone_name_[kMaxTimezoneChars];
 };
 
 }  // namespace internal

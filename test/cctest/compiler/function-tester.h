@@ -26,7 +26,8 @@ class FunctionTester : public InitializedHandleScope {
 
   FunctionTester(Handle<Code> code, int param_count);
 
-  FunctionTester(const CallInterfaceDescriptor& descriptor, Handle<Code> code);
+  // Assumes VoidDescriptor call interface.
+  explicit FunctionTester(Handle<Code> code);
 
   Isolate* isolate;
   Handle<JSFunction> function;
@@ -39,6 +40,7 @@ class FunctionTester : public InitializedHandleScope {
   MaybeHandle<Object> Call(Handle<Object> a, Handle<Object> b, Handle<Object> c,
                            Handle<Object> d);
 
+  void CheckThrows(Handle<Object> a);
   void CheckThrows(Handle<Object> a, Handle<Object> b);
   v8::Local<v8::Message> CheckThrowsReturnMessage(Handle<Object> a,
                                                   Handle<Object> b);

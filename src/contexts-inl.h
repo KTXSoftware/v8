@@ -6,7 +6,10 @@
 #define V8_CONTEXTS_INL_H_
 
 #include "src/contexts.h"
+#include "src/heap/heap.h"
 #include "src/objects-inl.h"
+#include "src/objects/dictionary.h"
+#include "src/objects/regexp-match-info.h"
 
 namespace v8 {
 namespace internal {
@@ -118,12 +121,19 @@ bool Context::IsModuleContext() {
   return map == map->GetHeap()->module_context_map();
 }
 
+bool Context::IsEvalContext() {
+  Map* map = this->map();
+  return map == map->GetHeap()->eval_context_map();
+}
 
 bool Context::IsScriptContext() {
   Map* map = this->map();
   return map == map->GetHeap()->script_context_map();
 }
 
+bool Context::OptimizedCodeMapIsCleared() {
+  return osr_code_table() == GetHeap()->empty_fixed_array();
+}
 
 bool Context::HasSameSecurityTokenAs(Context* that) {
   return this->native_context()->security_token() ==

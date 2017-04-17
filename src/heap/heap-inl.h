@@ -9,9 +9,11 @@
 
 #include "src/base/platform/platform.h"
 #include "src/counters-inl.h"
+#include "src/feedback-vector-inl.h"
 #include "src/heap/heap.h"
 #include "src/heap/incremental-marking-inl.h"
 #include "src/heap/mark-compact.h"
+#include "src/heap/object-stats.h"
 #include "src/heap/remembered-set.h"
 #include "src/heap/spaces-inl.h"
 #include "src/heap/store-buffer.h"
@@ -20,7 +22,7 @@
 #include "src/log.h"
 #include "src/msan.h"
 #include "src/objects-inl.h"
-#include "src/type-feedback-vector-inl.h"
+#include "src/objects/scope-info.h"
 
 namespace v8 {
 namespace internal {
@@ -223,6 +225,8 @@ AllocationResult Heap::AllocateInternalizedStringImpl(T t, int chars,
 AllocationResult Heap::AllocateOneByteInternalizedString(
     Vector<const uint8_t> str, uint32_t hash_field) {
   CHECK_GE(String::kMaxLength, str.length());
+  // The canonical empty_string is the only zero-length string we allow.
+  DCHECK_IMPLIES(str.length() == 0, roots_[kempty_stringRootIndex] == nullptr);
   // Compute map and object size.
   Map* map = one_byte_internalized_string_map();
   int size = SeqOneByteString::SizeFor(str.length());
@@ -254,6 +258,7 @@ AllocationResult Heap::AllocateOneByteInternalizedString(
 AllocationResult Heap::AllocateTwoByteInternalizedString(Vector<const uc16> str,
                                                          uint32_t hash_field) {
   CHECK_GE(String::kMaxLength, str.length());
+  DCHECK_NE(0, str.length());  // Use Heap::empty_string() instead.
   // Compute map and object size.
   Map* map = internalized_string_map();
   int size = SeqTwoByteString::SizeFor(str.length());
@@ -501,9 +506,7 @@ void Heap::RecordWrite(Object* object, int offset, Object* o) {
   if (!InNewSpace(o) || !object->IsHeapObject() || InNewSpace(object)) {
     return;
   }
-  RememberedSet<OLD_TO_NEW>::Insert(
-      Page::FromAddress(reinterpret_cast<Address>(object)),
-      HeapObject::cast(object)->address() + offset);
+  store_buffer()->InsertEntry(HeapObject::cast(object)->address() + offset);
 }
 
 void Heap::RecordWriteIntoCode(Code* host, RelocInfo* rinfo, Object* value) {
@@ -514,11 +517,9 @@ void Heap::RecordWriteIntoCode(Code* host, RelocInfo* rinfo, Object* value) {
 
 void Heap::RecordFixedArrayElements(FixedArray* array, int offset, int length) {
   if (InNewSpace(array)) return;
-  Page* page = Page::FromAddress(reinterpret_cast<Address>(array));
   for (int i = 0; i < length; i++) {
     if (!InNewSpace(array->get(offset + i))) continue;
-    RememberedSet<OLD_TO_NEW>::Insert(
-        page,
+    store_buffer()->InsertEntry(
         reinterpret_cast<Address>(array->RawFieldOfElementAt(offset + i)));
   }
 }
@@ -630,7 +631,13 @@ AllocationMemento* Heap::FindAllocationMemento(HeapObject* object) {
 template <Heap::UpdateAllocationSiteMode mode>
 void Heap::UpdateAllocationSite(HeapObject* object,
                                 base::HashMap* pretenuring_feedback) {
-  DCHECK(InFromSpace(object));
+  DCHECK(InFromSpace(object) ||
+         (InToSpace(object) &&
+          Page::FromAddress(object->address())
+              ->IsFlagSet(Page::PAGE_NEW_NEW_PROMOTION)) ||
+         (!InNewSpace(object) &&
+          Page::FromAddress(object->address())
+              ->IsFlagSet(Page::PAGE_NEW_OLD_PROMOTION)));
   if (!FLAG_allocation_site_pretenuring ||
       !AllocationSite::CanTrack(object->map()->instance_type()))
     return;
@@ -685,6 +692,10 @@ Isolate* Heap::isolate() {
       reinterpret_cast<size_t>(reinterpret_cast<Isolate*>(16)->heap()) + 16);
 }
 
+void Heap::ExternalStringTable::PromoteAllNewSpaceStrings() {
+  old_space_strings_.AddAll(new_space_strings_);
+  new_space_strings_.Clear();
+}
 
 void Heap::ExternalStringTable::AddString(String* string) {
   DCHECK(string->IsExternalString());
@@ -695,12 +706,15 @@ void Heap::ExternalStringTable::AddString(String* string) {
   }
 }
 
-
-void Heap::ExternalStringTable::Iterate(ObjectVisitor* v) {
+void Heap::ExternalStringTable::IterateNewSpaceStrings(ObjectVisitor* v) {
   if (!new_space_strings_.is_empty()) {
     Object** start = &new_space_strings_[0];
     v->VisitPointers(start, start + new_space_strings_.length());
   }
+}
+
+void Heap::ExternalStringTable::IterateAll(ObjectVisitor* v) {
+  IterateNewSpaceStrings(v);
   if (!old_space_strings_.is_empty()) {
     Object** start = &old_space_strings_[0];
     v->VisitPointers(start, start + old_space_strings_.length());
@@ -778,9 +792,14 @@ void Heap::SetArgumentsAdaptorDeoptPCOffset(int pc_offset) {
   set_arguments_adaptor_deopt_pc_offset(Smi::FromInt(pc_offset));
 }
 
-void Heap::SetConstructStubDeoptPCOffset(int pc_offset) {
-  DCHECK(construct_stub_deopt_pc_offset() == Smi::kZero);
-  set_construct_stub_deopt_pc_offset(Smi::FromInt(pc_offset));
+void Heap::SetConstructStubCreateDeoptPCOffset(int pc_offset) {
+  DCHECK(construct_stub_create_deopt_pc_offset() == Smi::kZero);
+  set_construct_stub_create_deopt_pc_offset(Smi::FromInt(pc_offset));
+}
+
+void Heap::SetConstructStubInvokeDeoptPCOffset(int pc_offset) {
+  DCHECK(construct_stub_invoke_deopt_pc_offset() == Smi::kZero);
+  set_construct_stub_invoke_deopt_pc_offset(Smi::FromInt(pc_offset));
 }
 
 void Heap::SetGetterStubDeoptPCOffset(int pc_offset) {
@@ -806,7 +825,24 @@ int Heap::GetNextTemplateSerialNumber() {
 
 void Heap::SetSerializedTemplates(FixedArray* templates) {
   DCHECK_EQ(empty_fixed_array(), serialized_templates());
+  DCHECK(isolate()->serializer_enabled());
   set_serialized_templates(templates);
+}
+
+void Heap::SetSerializedGlobalProxySizes(FixedArray* sizes) {
+  DCHECK_EQ(empty_fixed_array(), serialized_global_proxy_sizes());
+  DCHECK(isolate()->serializer_enabled());
+  set_serialized_global_proxy_sizes(sizes);
+}
+
+void Heap::CreateObjectStats() {
+  if (V8_LIKELY(FLAG_gc_stats == 0)) return;
+  if (!live_object_stats_) {
+    live_object_stats_ = new ObjectStats(this);
+  }
+  if (!dead_object_stats_) {
+    dead_object_stats_ = new ObjectStats(this);
+  }
 }
 
 AlwaysAllocateScope::AlwaysAllocateScope(Isolate* isolate)
@@ -816,7 +852,7 @@ AlwaysAllocateScope::AlwaysAllocateScope(Isolate* isolate)
 
 
 AlwaysAllocateScope::~AlwaysAllocateScope() {
-  heap_->always_allocate_scope_count_.Increment(-1);
+  heap_->always_allocate_scope_count_.Decrement(1);
 }
 
 
@@ -826,6 +862,8 @@ void VerifyPointersVisitor::VisitPointers(Object** start, Object** end) {
       HeapObject* object = HeapObject::cast(*current);
       CHECK(object->GetIsolate()->heap()->Contains(object));
       CHECK(object->map()->IsMap());
+    } else {
+      CHECK((*current)->IsSmi());
     }
   }
 }

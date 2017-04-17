@@ -8,7 +8,8 @@
 #include "src/arguments.h"
 #include "src/base/logging.h"
 #include "src/builtins/builtins.h"
-#include "src/code-stub-assembler.h"
+#include "src/factory.h"
+#include "src/isolate.h"
 
 namespace v8 {
 namespace internal {
@@ -27,7 +28,7 @@ class BuiltinArguments : public Arguments {
     return Arguments::operator[](index);
   }
 
-  template <class S>
+  template <class S = Object>
   Handle<S> at(int index) {
     DCHECK_LT(index, length());
     return Arguments::at<S>(index);
@@ -117,8 +118,7 @@ class BuiltinArguments : public Arguments {
 // or converts the receiver to a String otherwise and assigns it to a new var
 // with the given {name}.
 #define TO_THIS_STRING(name, method)                                          \
-  if (args.receiver()->IsNull(isolate) ||                                     \
-      args.receiver()->IsUndefined(isolate)) {                                \
+  if (args.receiver()->IsNullOrUndefined(isolate)) {                          \
     THROW_NEW_ERROR_RETURN_FAILURE(                                           \
         isolate,                                                              \
         NewTypeError(MessageTemplate::kCalledOnNullOrUndefined,               \

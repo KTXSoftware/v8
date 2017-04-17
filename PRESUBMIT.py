@@ -31,6 +31,7 @@ See http://dev.chromium.org/developers/how-tos/depottools/presubmit-scripts
 for more details about the presubmit API built into gcl.
 """
 
+import re
 import sys
 
 
@@ -67,23 +68,22 @@ def _V8PresubmitChecks(input_api, output_api):
         input_api.PresubmitLocalPath(), 'tools'))
   from presubmit import CppLintProcessor
   from presubmit import SourceProcessor
-  from presubmit import CheckExternalReferenceRegistration
-  from presubmit import CheckAuthorizedAuthor
-  from presubmit import CheckStatusFiles
+  from presubmit import StatusFilesProcessor
 
   results = []
-  if not CppLintProcessor().Run(input_api.PresubmitLocalPath()):
+  if not CppLintProcessor().RunOnFiles(
+      input_api.AffectedFiles(include_deletes=False)):
     results.append(output_api.PresubmitError("C++ lint check failed"))
-  if not SourceProcessor().Run(input_api.PresubmitLocalPath()):
+  if not SourceProcessor().RunOnFiles(
+      input_api.AffectedFiles(include_deletes=False)):
     results.append(output_api.PresubmitError(
         "Copyright header, trailing whitespaces and two empty lines " \
         "between declarations check failed"))
-  if not CheckExternalReferenceRegistration(input_api.PresubmitLocalPath()):
-    results.append(output_api.PresubmitError(
-        "External references registration check failed"))
-  if not CheckStatusFiles(input_api.PresubmitLocalPath()):
+  if not StatusFilesProcessor().RunOnFiles(
+      input_api.AffectedFiles(include_deletes=True)):
     results.append(output_api.PresubmitError("Status file check failed"))
-  results.extend(CheckAuthorizedAuthor(input_api, output_api))
+  results.extend(input_api.canned_checks.CheckAuthorizedAuthor(
+      input_api, output_api))
   return results
 
 
@@ -251,6 +251,7 @@ def _CheckMissingFiles(input_api, output_api):
 def _CommonChecks(input_api, output_api):
   """Checks common to both upload and commit."""
   results = []
+  results.extend(_CheckCommitMessageBugEntry(input_api, output_api))
   results.extend(input_api.canned_checks.CheckOwners(
       input_api, output_api, source_file_filter=None))
   results.extend(input_api.canned_checks.CheckPatchFormatted(
@@ -275,6 +276,32 @@ def _SkipTreeCheck(input_api, output_api):
       lambda file: file.LocalPath() == src_version):
     return False
   return input_api.environ.get('PRESUBMIT_TREE_CHECK') == 'skip'
+
+
+def _CheckCommitMessageBugEntry(input_api, output_api):
+  """Check that bug entries are well-formed in commit message."""
+  bogus_bug_msg = (
+      'Bogus BUG entry: %s. Please specify the issue tracker prefix and the '
+      'issue number, separated by a colon, e.g. v8:123 or chromium:12345.')
+  results = []
+  for bug in (input_api.change.BUG or '').split(','):
+    bug = bug.strip()
+    if 'none'.startswith(bug.lower()):
+      continue
+    if ':' not in bug:
+      try:
+        if int(bug) > 100000:
+          # Rough indicator for current chromium bugs.
+          prefix_guess = 'chromium'
+        else:
+          prefix_guess = 'v8'
+        results.append('BUG entry requires issue tracker prefix, e.g. %s:%s' %
+                       (prefix_guess, bug))
+      except ValueError:
+        results.append(bogus_bug_msg % bug)
+    elif not re.match(r'\w+:\d+', bug):
+      results.append(bogus_bug_msg % bug)
+  return [output_api.PresubmitError(r) for r in results]
 
 
 def CheckChangeOnUpload(input_api, output_api):

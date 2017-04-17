@@ -31,7 +31,7 @@
 #include <memory>
 
 #include "include/libplatform/libplatform.h"
-#include "include/v8-debug.h"
+#include "src/debug/debug-interface.h"
 #include "src/utils.h"
 #include "src/v8.h"
 #include "src/zone/accounting-allocator.h"
@@ -318,6 +318,9 @@ static inline v8::Local<v8::Value> v8_num(double x) {
   return v8::Number::New(v8::Isolate::GetCurrent(), x);
 }
 
+static inline v8::Local<v8::Integer> v8_int(int32_t x) {
+  return v8::Integer::New(v8::Isolate::GetCurrent(), x);
+}
 
 static inline v8::Local<v8::String> v8_str(const char* x) {
   return v8::String::NewFromUtf8(v8::Isolate::GetCurrent(), x,
@@ -547,18 +550,15 @@ static inline void CheckDoubleEquals(double expected, double actual) {
   CHECK_GE(expected, actual - kEpsilon);
 }
 
-
-static void DummyDebugEventListener(
-    const v8::Debug::EventDetails& event_details) {}
-
+static v8::debug::DebugDelegate dummy_delegate;
 
 static inline void EnableDebugger(v8::Isolate* isolate) {
-  v8::Debug::SetDebugEventListener(isolate, &DummyDebugEventListener);
+  v8::debug::SetDebugDelegate(isolate, &dummy_delegate);
 }
 
 
 static inline void DisableDebugger(v8::Isolate* isolate) {
-  v8::Debug::SetDebugEventListener(isolate, nullptr);
+  v8::debug::SetDebugDelegate(isolate, nullptr);
 }
 
 
@@ -583,7 +583,6 @@ class InitializedHandleScope {
   std::unique_ptr<InitializedHandleScopeImpl> initialized_handle_scope_impl_;
 };
 
-
 class HandleAndZoneScope : public InitializedHandleScope {
  public:
   HandleAndZoneScope();
@@ -595,6 +594,20 @@ class HandleAndZoneScope : public InitializedHandleScope {
  private:
   v8::internal::AccountingAllocator allocator_;
   std::unique_ptr<i::Zone> main_zone_;
+};
+
+class StaticOneByteResource : public v8::String::ExternalOneByteStringResource {
+ public:
+  explicit StaticOneByteResource(const char* data) : data_(data) {}
+
+  ~StaticOneByteResource() {}
+
+  const char* data() const { return data_; }
+
+  size_t length() const { return strlen(data_); }
+
+ private:
+  const char* data_;
 };
 
 #endif  // ifndef CCTEST_H_

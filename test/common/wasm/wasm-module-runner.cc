@@ -6,12 +6,14 @@
 
 #include "src/handles.h"
 #include "src/isolate.h"
+#include "src/objects-inl.h"
 #include "src/objects.h"
 #include "src/property-descriptor.h"
 #include "src/wasm/module-decoder.h"
 #include "src/wasm/wasm-interpreter.h"
 #include "src/wasm/wasm-js.h"
 #include "src/wasm/wasm-module.h"
+#include "src/wasm/wasm-objects.h"
 #include "src/wasm/wasm-result.h"
 
 namespace v8 {
@@ -23,20 +25,18 @@ uint32_t GetMinModuleMemSize(const WasmModule* module) {
   return WasmModule::kPageSize * module->min_mem_pages;
 }
 
-const WasmModule* DecodeWasmModuleForTesting(Isolate* isolate,
-                                             ErrorThrower* thrower,
-                                             const byte* module_start,
-                                             const byte* module_end,
-                                             ModuleOrigin origin) {
+const WasmModule* DecodeWasmModuleForTesting(
+    Isolate* isolate, ErrorThrower* thrower, const byte* module_start,
+    const byte* module_end, ModuleOrigin origin, bool verify_functions) {
   // Decode the module, but don't verify function bodies, since we'll
   // be compiling them anyway.
-  ModuleResult decoding_result =
-      DecodeWasmModule(isolate, module_start, module_end, false, origin);
+  ModuleResult decoding_result = DecodeWasmModule(
+      isolate, module_start, module_end, verify_functions, origin);
 
   if (decoding_result.failed()) {
     // Module verification failed. throw.
     thrower->CompileError("WASM.compileRun() failed: %s",
-                          decoding_result.error_msg.get());
+                          decoding_result.error_msg.c_str());
   }
 
   if (thrower->error()) {
@@ -46,40 +46,36 @@ const WasmModule* DecodeWasmModuleForTesting(Isolate* isolate,
   return decoding_result.val;
 }
 
-const Handle<JSObject> InstantiateModuleForTesting(Isolate* isolate,
-                                                   ErrorThrower* thrower,
-                                                   const WasmModule* module) {
-  CHECK(module != nullptr);
-
+const Handle<WasmInstanceObject> InstantiateModuleForTesting(
+    Isolate* isolate, ErrorThrower* thrower, const WasmModule* module,
+    const ModuleWireBytes& wire_bytes) {
+  DCHECK_NOT_NULL(module);
   if (module->import_table.size() > 0) {
     thrower->CompileError("Not supported: module has imports.");
   }
-  if (module->export_table.size() == 0) {
-    thrower->CompileError("Not supported: module has no exports.");
-  }
-  if (thrower->error()) return Handle<JSObject>::null();
+
+  if (thrower->error()) return Handle<WasmInstanceObject>::null();
 
   // Although we decoded the module for some pre-validation, run the bytes
   // again through the normal pipeline.
   // TODO(wasm): Use {module} instead of decoding the module bytes again.
-  MaybeHandle<JSObject> module_object = CreateModuleObjectFromBytes(
-      isolate, module->module_start, module->module_end, thrower,
-      ModuleOrigin::kWasmOrigin, Handle<Script>::null(), nullptr, nullptr);
+  MaybeHandle<WasmModuleObject> module_object =
+      SyncCompile(isolate, thrower, wire_bytes);
   if (module_object.is_null()) {
     thrower->CompileError("Module pre-validation failed.");
-    return Handle<JSObject>::null();
+    return Handle<WasmInstanceObject>::null();
   }
-  MaybeHandle<JSObject> maybe_instance = WasmModule::Instantiate(
-      isolate, thrower, module_object.ToHandleChecked(),
-      Handle<JSReceiver>::null(), Handle<JSArrayBuffer>::null());
-  Handle<JSObject> instance;
+  MaybeHandle<WasmInstanceObject> maybe_instance =
+      SyncInstantiate(isolate, thrower, module_object.ToHandleChecked(),
+                      Handle<JSReceiver>::null(), MaybeHandle<JSArrayBuffer>());
+  Handle<WasmInstanceObject> instance;
   if (!maybe_instance.ToHandle(&instance)) {
-    return Handle<JSObject>::null();
+    return Handle<WasmInstanceObject>::null();
   }
   return instance;
 }
 
-const Handle<JSObject> CompileInstantiateWasmModuleForTesting(
+const Handle<WasmInstanceObject> CompileInstantiateWasmModuleForTesting(
     Isolate* isolate, ErrorThrower* thrower, const byte* module_start,
     const byte* module_end, ModuleOrigin origin) {
   std::unique_ptr<const WasmModule> module(DecodeWasmModuleForTesting(
@@ -87,9 +83,10 @@ const Handle<JSObject> CompileInstantiateWasmModuleForTesting(
 
   if (module == nullptr) {
     thrower->CompileError("Wasm module decoding failed");
-    return Handle<JSObject>::null();
+    return Handle<WasmInstanceObject>::null();
   }
-  return InstantiateModuleForTesting(isolate, thrower, module.get());
+  return InstantiateModuleForTesting(isolate, thrower, module.get(),
+                                     ModuleWireBytes(module_start, module_end));
 }
 
 int32_t RunWasmModuleForTesting(Isolate* isolate, Handle<JSObject> instance,
@@ -114,10 +111,14 @@ int32_t CompileAndRunWasmModule(Isolate* isolate, const byte* module_start,
 }
 
 int32_t InterpretWasmModule(Isolate* isolate, ErrorThrower* thrower,
-                            const WasmModule* module, int function_index,
-                            WasmVal* args, bool* possible_nondeterminism) {
-  CHECK(module != nullptr);
+                            const WasmModule* module,
+                            const ModuleWireBytes& wire_bytes,
+                            int function_index, WasmVal* args,
+                            bool* possible_nondeterminism) {
+  // Don't execute more than 16k steps.
+  constexpr int kMaxNumSteps = 16 * 1024;
 
+  DCHECK_NOT_NULL(module);
   Zone zone(isolate->allocator(), ZONE_NAME);
   v8::internal::HandleScope scope(isolate);
 
@@ -130,22 +131,6 @@ int32_t InterpretWasmModule(Isolate* isolate, ErrorThrower* thrower,
 
   if (thrower->error()) return -1;
 
-  ModuleEnv module_env;
-  module_env.module = module;
-  module_env.origin = module->origin;
-
-  for (size_t i = 0; i < module->functions.size(); i++) {
-    FunctionBody body = {
-        &module_env, module->functions[i].sig, module->module_start,
-        module->module_start + module->functions[i].code_start_offset,
-        module->module_start + module->functions[i].code_end_offset};
-    DecodeResult result = VerifyWasmCode(isolate->allocator(), body);
-    if (result.failed()) {
-      thrower->CompileError("Function did not verify");
-      return -1;
-    }
-  }
-
   // The code verifies, we create an instance to run it in the interpreter.
   WasmInstance instance(module);
   instance.context = isolate->native_context();
@@ -155,14 +140,14 @@ int32_t InterpretWasmModule(Isolate* isolate, ErrorThrower* thrower,
   instance.mem_start =
       static_cast<byte*>(calloc(GetMinModuleMemSize(module), 1));
   instance.globals_start = nullptr;
-  module_env.instance = &instance;
 
-  WasmInterpreter interpreter(&instance, isolate->allocator());
+  ModuleBytesEnv env(module, &instance, wire_bytes);
+  WasmInterpreter interpreter(isolate, env);
 
   WasmInterpreter::Thread* thread = interpreter.GetThread(0);
   thread->Reset();
-  thread->PushFrame(&(module->functions[function_index]), args);
-  WasmInterpreter::State interpreter_result = thread->Run();
+  thread->InitFrame(&(module->functions[function_index]), args);
+  WasmInterpreter::State interpreter_result = thread->Run(kMaxNumSteps);
   if (instance.mem_start) {
     free(instance.mem_start);
   }
@@ -222,9 +207,7 @@ int32_t CallWasmFunctionForTesting(Isolate* isolate, Handle<JSObject> instance,
 }
 
 void SetupIsolateForWasmModule(Isolate* isolate) {
-  WasmJs::InstallWasmMapsIfNeeded(isolate, isolate->native_context());
-  WasmJs::InstallWasmModuleSymbolIfNeeded(isolate, isolate->global_object(),
-                                          isolate->native_context());
+  WasmJs::Install(isolate);
 }
 }  // namespace testing
 }  // namespace wasm

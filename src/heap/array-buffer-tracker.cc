@@ -19,8 +19,10 @@ void LocalArrayBufferTracker::Free() {
   for (TrackingData::iterator it = array_buffers_.begin();
        it != array_buffers_.end();) {
     JSArrayBuffer* buffer = reinterpret_cast<JSArrayBuffer*>(it->first);
+    // TODO(mlippautz): Create a dependency on the collector to avoid getting
+    // the marking state out of thin air.
     if ((free_mode == kFreeAll) ||
-        Marking::IsWhite(ObjectMarking::MarkBitFrom(buffer))) {
+        ObjectMarking::IsWhite(buffer, MarkingState::Internal(buffer))) {
       const size_t len = it->second;
       heap_->isolate()->array_buffer_allocator()->Free(buffer->backing_store(),
                                                        len);
@@ -78,8 +80,8 @@ void LocalArrayBufferTracker::Process(Callback callback) {
 
 void ArrayBufferTracker::FreeDeadInNewSpace(Heap* heap) {
   DCHECK_EQ(heap->gc_state(), Heap::HeapState::SCAVENGE);
-  for (Page* page : NewSpacePageRange(heap->new_space()->FromSpaceStart(),
-                                      heap->new_space()->FromSpaceEnd())) {
+  for (Page* page : PageRange(heap->new_space()->FromSpaceStart(),
+                              heap->new_space()->FromSpaceEnd())) {
     bool empty = ProcessBuffers(page, kUpdateForwardedRemoveOthers);
     CHECK(empty);
   }

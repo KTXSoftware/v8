@@ -21,7 +21,7 @@ var kWasmH1 = 0x61;
 var kWasmH2 = 0x73;
 var kWasmH3 = 0x6d;
 
-var kWasmV0 = 0xD;
+var kWasmV0 = 0x1;
 var kWasmV1 = 0;
 var kWasmV2 = 0;
 var kWasmV3 = 0;
@@ -65,6 +65,10 @@ let kCodeSectionCode = 10;      // Function code
 let kDataSectionCode = 11;     // Data segments
 let kNameSectionCode = 12;     // Name section (encoded as string)
 
+// Name section types
+let kFunctionNamesCode = 1;
+let kLocalNamesCode = 2;
+
 let kWasmFunctionTypeForm = 0x60;
 let kWasmAnyFunctionTypeForm = 0x70;
 
@@ -77,12 +81,12 @@ let kDeclFunctionLocals = 0x04;
 let kDeclFunctionExport = 0x08;
 
 // Local types
-let kAstStmt = 0x40;
-let kAstI32 = 0x7f;
-let kAstI64 = 0x7e;
-let kAstF32 = 0x7d;
-let kAstF64 = 0x7c;
-let kAstS128 = 0x7b;
+let kWasmStmt = 0x40;
+let kWasmI32 = 0x7f;
+let kWasmI64 = 0x7e;
+let kWasmF32 = 0x7d;
+let kWasmF64 = 0x7c;
+let kWasmS128 = 0x7b;
 
 let kExternalFunction = 0;
 let kExternalTable = 1;
@@ -93,27 +97,27 @@ let kTableZero = 0;
 let kMemoryZero = 0;
 
 // Useful signatures
-let kSig_i_i = makeSig([kAstI32], [kAstI32]);
-let kSig_l_l = makeSig([kAstI64], [kAstI64]);
-let kSig_i_l = makeSig([kAstI64], [kAstI32]);
-let kSig_i_ii = makeSig([kAstI32, kAstI32], [kAstI32]);
-let kSig_i_iii = makeSig([kAstI32, kAstI32, kAstI32], [kAstI32]);
-let kSig_d_dd = makeSig([kAstF64, kAstF64], [kAstF64]);
-let kSig_l_ll = makeSig([kAstI64, kAstI64], [kAstI64]);
-let kSig_i_dd = makeSig([kAstF64, kAstF64], [kAstI32]);
+let kSig_i_i = makeSig([kWasmI32], [kWasmI32]);
+let kSig_l_l = makeSig([kWasmI64], [kWasmI64]);
+let kSig_i_l = makeSig([kWasmI64], [kWasmI32]);
+let kSig_i_ii = makeSig([kWasmI32, kWasmI32], [kWasmI32]);
+let kSig_i_iii = makeSig([kWasmI32, kWasmI32, kWasmI32], [kWasmI32]);
+let kSig_d_dd = makeSig([kWasmF64, kWasmF64], [kWasmF64]);
+let kSig_l_ll = makeSig([kWasmI64, kWasmI64], [kWasmI64]);
+let kSig_i_dd = makeSig([kWasmF64, kWasmF64], [kWasmI32]);
 let kSig_v_v = makeSig([], []);
-let kSig_i_v = makeSig([], [kAstI32]);
-let kSig_l_v = makeSig([], [kAstI64]);
-let kSig_f_v = makeSig([], [kAstF64]);
-let kSig_d_v = makeSig([], [kAstF64]);
-let kSig_v_i = makeSig([kAstI32], []);
-let kSig_v_ii = makeSig([kAstI32, kAstI32], []);
-let kSig_v_iii = makeSig([kAstI32, kAstI32, kAstI32], []);
-let kSig_v_l = makeSig([kAstI64], []);
-let kSig_v_d = makeSig([kAstF64], []);
-let kSig_v_dd = makeSig([kAstF64, kAstF64], []);
-let kSig_v_ddi = makeSig([kAstF64, kAstF64, kAstI32], []);
-let kSig_s_v = makeSig([], [kAstS128]);
+let kSig_i_v = makeSig([], [kWasmI32]);
+let kSig_l_v = makeSig([], [kWasmI64]);
+let kSig_f_v = makeSig([], [kWasmF64]);
+let kSig_d_v = makeSig([], [kWasmF64]);
+let kSig_v_i = makeSig([kWasmI32], []);
+let kSig_v_ii = makeSig([kWasmI32, kWasmI32], []);
+let kSig_v_iii = makeSig([kWasmI32, kWasmI32, kWasmI32], []);
+let kSig_v_l = makeSig([kWasmI64], []);
+let kSig_v_d = makeSig([kWasmF64], []);
+let kSig_v_dd = makeSig([kWasmF64, kWasmF64], []);
+let kSig_v_ddi = makeSig([kWasmF64, kWasmF64, kWasmI32], []);
+let kSig_s_v = makeSig([], [kWasmS128]);
 
 function makeSig(params, results) {
   return {params: params, results: results};
@@ -167,7 +171,6 @@ let kExprI32Const = 0x41;
 let kExprI64Const = 0x42;
 let kExprF32Const = 0x43;
 let kExprF64Const = 0x44;
-let kExprI8Const = 0xcb;
 let kExprI32LoadMem = 0x28;
 let kExprI64LoadMem = 0x29;
 let kExprF32LoadMem = 0x2a;
@@ -316,6 +319,7 @@ let kExprI32ReinterpretF32 = 0xbc;
 let kExprI64ReinterpretF64 = 0xbd;
 let kExprF32ReinterpretI32 = 0xbe;
 let kExprF64ReinterpretI64 = 0xbf;
+let kExprS128LoadMem = 0xc0;
 
 let kTrapUnreachable          = 0;
 let kTrapMemOutOfBounds       = 1;
@@ -340,36 +344,34 @@ let kTrapMsgs = [
 ];
 
 function assertTraps(trap, code) {
-    var threwException = true;
-    try {
-      if (typeof code === 'function') {
-        code();
-      } else {
-        eval(code);
-      }
-      threwException = false;
-    } catch (e) {
-      assertEquals("object", typeof e);
-      assertEquals(kTrapMsgs[trap], e.message);
-      // Success.
-      return;
+  try {
+    if (typeof code === 'function') {
+      code();
+    } else {
+      eval(code);
     }
-    throw new MjsUnitAssertionError("Did not trap, expected: " + kTrapMsgs[trap]);
+  } catch (e) {
+    assertEquals('object', typeof e);
+    assertEquals(kTrapMsgs[trap], e.message);
+    // Success.
+    return;
+  }
+  throw new MjsUnitAssertionError('Did not trap, expected: ' + kTrapMsgs[trap]);
 }
 
 function assertWasmThrows(value, code) {
-    assertEquals("number", typeof(value));
-    try {
-      if (typeof code === 'function') {
-        code();
-      } else {
-        eval(code);
-      }
-    } catch (e) {
-      assertEquals("number", typeof e);
-      assertEquals(value, e);
-      // Success.
-      return;
+  assertEquals('number', typeof value);
+  try {
+    if (typeof code === 'function') {
+      code();
+    } else {
+      eval(code);
     }
-    throw new MjsUnitAssertionError("Did not throw at all, expected: " + value);
+  } catch (e) {
+    assertEquals('number', typeof e);
+    assertEquals(value, e);
+    // Success.
+    return;
+  }
+  throw new MjsUnitAssertionError('Did not throw, expected: ' + value);
 }

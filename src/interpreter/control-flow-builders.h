@@ -14,7 +14,7 @@ namespace v8 {
 namespace internal {
 namespace interpreter {
 
-class ControlFlowBuilder BASE_EMBEDDED {
+class V8_EXPORT_PRIVATE ControlFlowBuilder BASE_EMBEDDED {
  public:
   explicit ControlFlowBuilder(BytecodeArrayBuilder* builder)
       : builder_(builder) {}
@@ -29,7 +29,8 @@ class ControlFlowBuilder BASE_EMBEDDED {
   DISALLOW_COPY_AND_ASSIGN(ControlFlowBuilder);
 };
 
-class BreakableControlFlowBuilder : public ControlFlowBuilder {
+class V8_EXPORT_PRIVATE BreakableControlFlowBuilder
+    : public ControlFlowBuilder {
  public:
   explicit BreakableControlFlowBuilder(BytecodeArrayBuilder* builder)
       : ControlFlowBuilder(builder), break_labels_(builder->zone()) {}
@@ -43,8 +44,12 @@ class BreakableControlFlowBuilder : public ControlFlowBuilder {
   // Inserts a jump to an unbound label that is patched when the corresponding
   // BindBreakTarget is called.
   void Break() { EmitJump(&break_labels_); }
-  void BreakIfTrue() { EmitJumpIfTrue(&break_labels_); }
-  void BreakIfFalse() { EmitJumpIfFalse(&break_labels_); }
+  void BreakIfTrue(BytecodeArrayBuilder::ToBooleanMode mode) {
+    EmitJumpIfTrue(mode, &break_labels_);
+  }
+  void BreakIfFalse(BytecodeArrayBuilder::ToBooleanMode mode) {
+    EmitJumpIfFalse(mode, &break_labels_);
+  }
   void BreakIfUndefined() { EmitJumpIfUndefined(&break_labels_); }
   void BreakIfNull() { EmitJumpIfNull(&break_labels_); }
 
@@ -52,8 +57,10 @@ class BreakableControlFlowBuilder : public ControlFlowBuilder {
 
  protected:
   void EmitJump(BytecodeLabels* labels);
-  void EmitJumpIfTrue(BytecodeLabels* labels);
-  void EmitJumpIfFalse(BytecodeLabels* labels);
+  void EmitJumpIfTrue(BytecodeArrayBuilder::ToBooleanMode mode,
+                      BytecodeLabels* labels);
+  void EmitJumpIfFalse(BytecodeArrayBuilder::ToBooleanMode mode,
+                       BytecodeLabels* labels);
   void EmitJumpIfUndefined(BytecodeLabels* labels);
   void EmitJumpIfNull(BytecodeLabels* labels);
 
@@ -63,7 +70,8 @@ class BreakableControlFlowBuilder : public ControlFlowBuilder {
 
 
 // Class to track control flow for block statements (which can break in JS).
-class BlockBuilder final : public BreakableControlFlowBuilder {
+class V8_EXPORT_PRIVATE BlockBuilder final
+    : public BreakableControlFlowBuilder {
  public:
   explicit BlockBuilder(BytecodeArrayBuilder* builder)
       : BreakableControlFlowBuilder(builder) {}
@@ -77,7 +85,7 @@ class BlockBuilder final : public BreakableControlFlowBuilder {
 
 // A class to help with co-ordinating break and continue statements with
 // their loop.
-class LoopBuilder final : public BreakableControlFlowBuilder {
+class V8_EXPORT_PRIVATE LoopBuilder final : public BreakableControlFlowBuilder {
  public:
   explicit LoopBuilder(BytecodeArrayBuilder* builder)
       : BreakableControlFlowBuilder(builder),
@@ -85,7 +93,7 @@ class LoopBuilder final : public BreakableControlFlowBuilder {
         header_labels_(builder->zone()) {}
   ~LoopBuilder();
 
-  void LoopHeader(ZoneVector<BytecodeLabel>* additional_labels);
+  void LoopHeader(ZoneVector<BytecodeLabel>* additional_labels = nullptr);
   void JumpToHeader(int loop_depth);
   void BindContinueTarget();
   void EndLoop();
@@ -94,7 +102,6 @@ class LoopBuilder final : public BreakableControlFlowBuilder {
   // Inserts a jump to an unbound label that is patched when BindContinueTarget
   // is called.
   void Continue() { EmitJump(&continue_labels_); }
-  void ContinueIfTrue() { EmitJumpIfTrue(&continue_labels_); }
   void ContinueIfUndefined() { EmitJumpIfUndefined(&continue_labels_); }
   void ContinueIfNull() { EmitJumpIfNull(&continue_labels_); }
 
@@ -109,7 +116,8 @@ class LoopBuilder final : public BreakableControlFlowBuilder {
 
 
 // A class to help with co-ordinating break statements with their switch.
-class SwitchBuilder final : public BreakableControlFlowBuilder {
+class V8_EXPORT_PRIVATE SwitchBuilder final
+    : public BreakableControlFlowBuilder {
  public:
   explicit SwitchBuilder(BytecodeArrayBuilder* builder, int number_of_cases)
       : BreakableControlFlowBuilder(builder),
@@ -123,9 +131,11 @@ class SwitchBuilder final : public BreakableControlFlowBuilder {
   void SetCaseTarget(int index);
 
   // This method is called when visiting case comparison operation for |index|.
-  // Inserts a JumpIfTrue to a unbound label that is patched when the
-  // corresponding SetCaseTarget is called.
-  void Case(int index) { builder()->JumpIfTrue(&case_sites_.at(index)); }
+  // Inserts a JumpIfTrue with ToBooleanMode |mode| to a unbound label that is
+  // patched when the corresponding SetCaseTarget is called.
+  void Case(BytecodeArrayBuilder::ToBooleanMode mode, int index) {
+    builder()->JumpIfTrue(mode, &case_sites_.at(index));
+  }
 
   // This method is called when all cases comparisons have been emitted if there
   // is a default case statement. Inserts a Jump to a unbound label that is
@@ -139,7 +149,7 @@ class SwitchBuilder final : public BreakableControlFlowBuilder {
 
 
 // A class to help with co-ordinating control flow in try-catch statements.
-class TryCatchBuilder final : public ControlFlowBuilder {
+class V8_EXPORT_PRIVATE TryCatchBuilder final : public ControlFlowBuilder {
  public:
   explicit TryCatchBuilder(BytecodeArrayBuilder* builder,
                            HandlerTable::CatchPrediction catch_prediction)
@@ -160,7 +170,7 @@ class TryCatchBuilder final : public ControlFlowBuilder {
 
 
 // A class to help with co-ordinating control flow in try-finally statements.
-class TryFinallyBuilder final : public ControlFlowBuilder {
+class V8_EXPORT_PRIVATE TryFinallyBuilder final : public ControlFlowBuilder {
  public:
   explicit TryFinallyBuilder(BytecodeArrayBuilder* builder,
                              HandlerTable::CatchPrediction catch_prediction)

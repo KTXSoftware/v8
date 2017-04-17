@@ -2,17 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "src/compiler/instruction.h"
+
 #include "src/compiler/common-operator.h"
 #include "src/compiler/graph.h"
-#include "src/compiler/instruction.h"
 #include "src/compiler/schedule.h"
 #include "src/compiler/state-values-utils.h"
+#include "src/source-position.h"
 
 namespace v8 {
 namespace internal {
 namespace compiler {
 
-const auto GetRegConfig = RegisterConfiguration::Turbofan;
+const RegisterConfiguration* (*GetRegConfig)() =
+    RegisterConfiguration::Turbofan;
 
 FlagsCondition CommuteFlagsCondition(FlagsCondition condition) {
   switch (condition) {
@@ -206,6 +209,15 @@ std::ostream& operator<<(std::ostream& os,
           break;
         case MachineRepresentation::kSimd128:
           os << "|s128";
+          break;
+        case MachineRepresentation::kSimd1x4:
+          os << "|s1x4";
+          break;
+        case MachineRepresentation::kSimd1x8:
+          os << "|s1x8";
+          break;
+        case MachineRepresentation::kSimd1x16:
+          os << "|s1x16";
           break;
         case MachineRepresentation::kTaggedSigned:
           os << "|ts";
@@ -432,6 +444,8 @@ std::ostream& operator<<(std::ostream& os, const FlagsMode& fm) {
       return os << "deoptimize";
     case kFlags_set:
       return os << "set";
+    case kFlags_trap:
+      return os << "trap";
   }
   UNREACHABLE();
   return os;
@@ -813,6 +827,7 @@ InstructionSequence::InstructionSequence(Isolate* isolate,
       next_virtual_register_(0),
       reference_maps_(zone()),
       representations_(zone()),
+      representation_mask_(0),
       deoptimization_entries_(zone()),
       current_block_(nullptr) {}
 
@@ -884,6 +899,9 @@ static MachineRepresentation FilterRepresentation(MachineRepresentation rep) {
     case MachineRepresentation::kFloat32:
     case MachineRepresentation::kFloat64:
     case MachineRepresentation::kSimd128:
+    case MachineRepresentation::kSimd1x4:
+    case MachineRepresentation::kSimd1x8:
+    case MachineRepresentation::kSimd1x16:
     case MachineRepresentation::kTaggedSigned:
     case MachineRepresentation::kTaggedPointer:
     case MachineRepresentation::kTagged:
@@ -918,12 +936,15 @@ void InstructionSequence::MarkAsRepresentation(MachineRepresentation rep,
   DCHECK_IMPLIES(representations_[virtual_register] != rep,
                  representations_[virtual_register] == DefaultRepresentation());
   representations_[virtual_register] = rep;
+  representation_mask_ |= 1 << static_cast<int>(rep);
 }
 
 int InstructionSequence::AddDeoptimizationEntry(
-    FrameStateDescriptor* descriptor, DeoptimizeReason reason) {
+    FrameStateDescriptor* descriptor, DeoptimizeKind kind,
+    DeoptimizeReason reason) {
   int deoptimization_id = static_cast<int>(deoptimization_entries_.size());
-  deoptimization_entries_.push_back(DeoptimizationEntry(descriptor, reason));
+  deoptimization_entries_.push_back(
+      DeoptimizationEntry(descriptor, kind, reason));
   return deoptimization_id;
 }
 
@@ -979,6 +1000,21 @@ void InstructionSequence::PrintBlock(const RegisterConfiguration* config,
 
 void InstructionSequence::PrintBlock(int block_id) const {
   PrintBlock(GetRegConfig(), block_id);
+}
+
+const RegisterConfiguration*
+    InstructionSequence::registerConfigurationForTesting_ = nullptr;
+
+const RegisterConfiguration*
+InstructionSequence::RegisterConfigurationForTesting() {
+  DCHECK(registerConfigurationForTesting_ != nullptr);
+  return registerConfigurationForTesting_;
+}
+
+void InstructionSequence::SetRegisterConfigurationForTesting(
+    const RegisterConfiguration* regConfig) {
+  registerConfigurationForTesting_ = regConfig;
+  GetRegConfig = InstructionSequence::RegisterConfigurationForTesting;
 }
 
 FrameStateDescriptor::FrameStateDescriptor(

@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "src/interpreter/control-flow-builders.h"
+#include "src/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -21,12 +22,14 @@ void BreakableControlFlowBuilder::EmitJump(BytecodeLabels* sites) {
   builder()->Jump(sites->New());
 }
 
-void BreakableControlFlowBuilder::EmitJumpIfTrue(BytecodeLabels* sites) {
-  builder()->JumpIfTrue(sites->New());
+void BreakableControlFlowBuilder::EmitJumpIfTrue(
+    BytecodeArrayBuilder::ToBooleanMode mode, BytecodeLabels* sites) {
+  builder()->JumpIfTrue(mode, sites->New());
 }
 
-void BreakableControlFlowBuilder::EmitJumpIfFalse(BytecodeLabels* sites) {
-  builder()->JumpIfFalse(sites->New());
+void BreakableControlFlowBuilder::EmitJumpIfFalse(
+    BytecodeArrayBuilder::ToBooleanMode mode, BytecodeLabels* sites) {
+  builder()->JumpIfFalse(mode, sites->New());
 }
 
 void BreakableControlFlowBuilder::EmitJumpIfUndefined(BytecodeLabels* sites) {
@@ -36,7 +39,6 @@ void BreakableControlFlowBuilder::EmitJumpIfUndefined(BytecodeLabels* sites) {
 void BreakableControlFlowBuilder::EmitJumpIfNull(BytecodeLabels* sites) {
   builder()->JumpIfNull(sites->New());
 }
-
 
 void BlockBuilder::EndBlock() {
   builder()->Bind(&block_end_);
@@ -55,8 +57,10 @@ void LoopBuilder::LoopHeader(ZoneVector<BytecodeLabel>* additional_labels) {
   // and misplaced between the headers.
   DCHECK(break_labels_.empty() && continue_labels_.empty());
   builder()->Bind(&loop_header_);
-  for (auto& label : *additional_labels) {
-    builder()->Bind(&label);
+  if (additional_labels != nullptr) {
+    for (auto& label : *additional_labels) {
+      builder()->Bind(&label);
+    }
   }
 }
 

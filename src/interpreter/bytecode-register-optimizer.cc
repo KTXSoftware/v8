@@ -194,13 +194,13 @@ BytecodeRegisterOptimizer::RegisterInfo::GetEquivalent() {
 BytecodeRegisterOptimizer::BytecodeRegisterOptimizer(
     Zone* zone, BytecodeRegisterAllocator* register_allocator,
     int fixed_registers_count, int parameter_count,
-    BytecodePipelineStage* next_stage)
+    BytecodeWriter* bytecode_writer)
     : accumulator_(Register::virtual_accumulator()),
       temporary_base_(fixed_registers_count),
       max_register_index_(fixed_registers_count - 1),
       register_info_table_(zone),
       equivalence_id_(0),
-      next_stage_(next_stage),
+      bytecode_writer_(bytecode_writer),
       flush_required_(false),
       zone_(zone) {
   register_allocator->set_observer(this);
@@ -257,25 +257,17 @@ void BytecodeRegisterOptimizer::Flush() {
 }
 
 void BytecodeRegisterOptimizer::OutputRegisterTransfer(
-    RegisterInfo* input_info, RegisterInfo* output_info,
-    BytecodeSourceInfo source_info) {
+    RegisterInfo* input_info, RegisterInfo* output_info) {
   Register input = input_info->register_value();
   Register output = output_info->register_value();
   DCHECK_NE(input.index(), output.index());
 
   if (input == accumulator_) {
-    uint32_t operand = static_cast<uint32_t>(output.ToOperand());
-    BytecodeNode node(Bytecode::kStar, operand, source_info);
-    next_stage_->Write(&node);
+    bytecode_writer_->EmitStar(output);
   } else if (output == accumulator_) {
-    uint32_t operand = static_cast<uint32_t>(input.ToOperand());
-    BytecodeNode node(Bytecode::kLdar, operand, source_info);
-    next_stage_->Write(&node);
+    bytecode_writer_->EmitLdar(input);
   } else {
-    uint32_t operand0 = static_cast<uint32_t>(input.ToOperand());
-    uint32_t operand1 = static_cast<uint32_t>(output.ToOperand());
-    BytecodeNode node(Bytecode::kMov, operand0, operand1, source_info);
-    next_stage_->Write(&node);
+    bytecode_writer_->EmitMov(input, output);
   }
   if (output != accumulator_) {
     max_register_index_ = std::max(max_register_index_, output.index());
@@ -328,9 +320,8 @@ void BytecodeRegisterOptimizer::AddToEquivalenceSet(
   flush_required_ = true;
 }
 
-void BytecodeRegisterOptimizer::RegisterTransfer(
-    RegisterInfo* input_info, RegisterInfo* output_info,
-    BytecodeSourceInfo source_info) {
+void BytecodeRegisterOptimizer::RegisterTransfer(RegisterInfo* input_info,
+                                                 RegisterInfo* output_info) {
   // Materialize an alternate in the equivalence set that
   // |output_info| is leaving.
   if (output_info->materialized()) {
@@ -348,10 +339,7 @@ void BytecodeRegisterOptimizer::RegisterTransfer(
     // Force store to be emitted when register is observable.
     output_info->set_materialized(false);
     RegisterInfo* materialized_info = input_info->GetMaterializedEquivalent();
-    OutputRegisterTransfer(materialized_info, output_info, source_info);
-  } else if (source_info.is_valid()) {
-    // Emit a placeholder nop to maintain source position info.
-    EmitNopForSourceInfo(source_info);
+    OutputRegisterTransfer(materialized_info, output_info);
   }
 
   bool input_is_observable = RegisterIsObservable(input_info->register_value());
@@ -360,13 +348,6 @@ void BytecodeRegisterOptimizer::RegisterTransfer(
     // registers as unmaterialized so that this register is used in preference.
     input_info->MarkTemporariesAsUnmaterialized(temporary_base_);
   }
-}
-
-void BytecodeRegisterOptimizer::EmitNopForSourceInfo(
-    BytecodeSourceInfo source_info) const {
-  DCHECK(source_info.is_valid());
-  BytecodeNode nop(Bytecode::kNop, source_info);
-  next_stage_->Write(&nop);
 }
 
 void BytecodeRegisterOptimizer::PrepareOutputRegister(Register reg) {
@@ -413,32 +394,6 @@ RegisterList BytecodeRegisterOptimizer::GetInputRegisterList(
       Materialize(input_info);
     }
     return reg_list;
-  }
-}
-
-void BytecodeRegisterOptimizer::PrepareForBytecode(Bytecode bytecode) {
-  if (Bytecodes::IsJump(bytecode) || bytecode == Bytecode::kDebugger ||
-      bytecode == Bytecode::kSuspendGenerator) {
-    // All state must be flushed before emitting
-    // - a jump bytecode (as the register equivalents at the jump target aren't
-    //   known.
-    // - a call to the debugger (as it can manipulate locals and parameters),
-    // - a generator suspend (as this involves saving all registers).
-    Flush();
-  }
-
-  // Materialize the accumulator if it is read by the bytecode. The
-  // accumulator is special and no other register can be materialized
-  // in it's place.
-  if (Bytecodes::ReadsAccumulator(bytecode) &&
-      !accumulator_info_->materialized()) {
-    Materialize(accumulator_info_);
-  }
-
-  // Materialize an equivalent to the accumulator if it will be
-  // clobbered when the bytecode is dispatched.
-  if (Bytecodes::WritesAccumulator(bytecode)) {
-    PrepareOutputRegister(accumulator_);
   }
 }
 

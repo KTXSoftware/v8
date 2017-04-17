@@ -2,9 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "src/compiler/register-allocator.h"
+
+#include "src/assembler-inl.h"
 #include "src/base/adapters.h"
 #include "src/compiler/linkage.h"
-#include "src/compiler/register-allocator.h"
 #include "src/string-stream.h"
 
 namespace v8 {
@@ -18,6 +20,11 @@ namespace compiler {
 
 
 namespace {
+
+static const int kFloatRepBit =
+    1 << static_cast<int>(MachineRepresentation::kFloat32);
+static const int kSimd128RepBit =
+    1 << static_cast<int>(MachineRepresentation::kSimd128);
 
 void RemoveElement(ZoneVector<LiveRange*>* v, LiveRange* range) {
   auto it = std::find(v->begin(), v->end(), range);
@@ -81,6 +88,10 @@ int GetByteWidth(MachineRepresentation rep) {
       return kDoubleSize;
     case MachineRepresentation::kSimd128:
       return kSimd128Size;
+    case MachineRepresentation::kSimd1x4:
+    case MachineRepresentation::kSimd1x8:
+    case MachineRepresentation::kSimd1x16:
+      return kSimdMaskRegisters ? kPointerSize : kSimd128Size;
     case MachineRepresentation::kNone:
       break;
   }
@@ -2022,6 +2033,13 @@ void LiveRangeBuilder::ProcessInstructions(const InstructionBlock* block,
   int block_start = block->first_instruction_index();
   LifetimePosition block_start_position =
       LifetimePosition::GapFromInstructionIndex(block_start);
+  bool fixed_float_live_ranges = false;
+  bool fixed_simd128_live_ranges = false;
+  if (!kSimpleFPAliasing) {
+    int mask = data()->code()->representation_mask();
+    fixed_float_live_ranges = (mask & kFloatRepBit) != 0;
+    fixed_simd128_live_ranges = (mask & kSimd128RepBit) != 0;
+  }
 
   for (int index = block->last_instruction_index(); index >= block_start;
        index--) {
@@ -2081,22 +2099,27 @@ void LiveRangeBuilder::ProcessInstructions(const InstructionBlock* block,
       }
       // Clobber fixed float registers on archs with non-simple aliasing.
       if (!kSimpleFPAliasing) {
-        for (int i = 0; i < config()->num_allocatable_float_registers(); ++i) {
-          // Add a UseInterval for all FloatRegisters. See comment above for
-          // general registers.
-          int code = config()->GetAllocatableFloatCode(i);
-          TopLevelLiveRange* range =
-              FixedFPLiveRangeFor(code, MachineRepresentation::kFloat32);
-          range->AddUseInterval(curr_position, curr_position.End(),
-                                allocation_zone());
+        if (fixed_float_live_ranges) {
+          for (int i = 0; i < config()->num_allocatable_float_registers();
+               ++i) {
+            // Add a UseInterval for all FloatRegisters. See comment above for
+            // general registers.
+            int code = config()->GetAllocatableFloatCode(i);
+            TopLevelLiveRange* range =
+                FixedFPLiveRangeFor(code, MachineRepresentation::kFloat32);
+            range->AddUseInterval(curr_position, curr_position.End(),
+                                  allocation_zone());
+          }
         }
-        for (int i = 0; i < config()->num_allocatable_simd128_registers();
-             ++i) {
-          int code = config()->GetAllocatableSimd128Code(i);
-          TopLevelLiveRange* range =
-              FixedFPLiveRangeFor(code, MachineRepresentation::kSimd128);
-          range->AddUseInterval(curr_position, curr_position.End(),
-                                allocation_zone());
+        if (fixed_simd128_live_ranges) {
+          for (int i = 0; i < config()->num_allocatable_simd128_registers();
+               ++i) {
+            int code = config()->GetAllocatableSimd128Code(i);
+            TopLevelLiveRange* range =
+                FixedFPLiveRangeFor(code, MachineRepresentation::kSimd128);
+            range->AddUseInterval(curr_position, curr_position.End(),
+                                  allocation_zone());
+          }
         }
       }
     }
@@ -2209,7 +2232,6 @@ void LiveRangeBuilder::ProcessInstructions(const InstructionBlock* block,
     }
   }
 }
-
 
 void LiveRangeBuilder::ProcessPhis(const InstructionBlock* block,
                                    BitVector* live) {
@@ -2520,7 +2542,13 @@ RegisterAllocator::RegisterAllocator(RegisterAllocationData* data,
       num_allocatable_registers_(
           GetAllocatableRegisterCount(data->config(), kind)),
       allocatable_register_codes_(
-          GetAllocatableRegisterCodes(data->config(), kind)) {}
+          GetAllocatableRegisterCodes(data->config(), kind)),
+      check_fp_aliasing_(false) {
+  if (!kSimpleFPAliasing && kind == FP_REGISTERS) {
+    check_fp_aliasing_ = (data->code()->representation_mask() &
+                          (kFloatRepBit | kSimd128RepBit)) != 0;
+  }
+}
 
 LifetimePosition RegisterAllocator::GetSplitPositionForInstruction(
     const LiveRange* range, int instruction_index) {
@@ -2747,7 +2775,7 @@ void LinearScanAllocator::AllocateRegisters() {
     for (TopLevelLiveRange* current : data()->fixed_double_live_ranges()) {
       if (current != nullptr) AddToInactive(current);
     }
-    if (!kSimpleFPAliasing) {
+    if (!kSimpleFPAliasing && check_fp_aliasing()) {
       for (TopLevelLiveRange* current : data()->fixed_float_live_ranges()) {
         if (current != nullptr) AddToInactive(current);
       }
@@ -2963,13 +2991,13 @@ void LinearScanAllocator::FindFreeRegistersForRange(
     GetFPRegisterSet(rep, &num_regs, &num_codes, &codes);
   DCHECK_GE(positions.length(), num_regs);
 
-  for (int i = 0; i < num_regs; i++) {
+  for (int i = 0; i < num_regs; ++i) {
     positions[i] = LifetimePosition::MaxPosition();
   }
 
   for (LiveRange* cur_active : active_live_ranges()) {
     int cur_reg = cur_active->assigned_register();
-    if (kSimpleFPAliasing || mode() == GENERAL_REGISTERS) {
+    if (kSimpleFPAliasing || !check_fp_aliasing()) {
       positions[cur_reg] = LifetimePosition::GapFromInstructionIndex(0);
       TRACE("Register %s is free until pos %d (1)\n", RegisterName(cur_reg),
             LifetimePosition::GapFromInstructionIndex(0).value());
@@ -2987,10 +3015,18 @@ void LinearScanAllocator::FindFreeRegistersForRange(
 
   for (LiveRange* cur_inactive : inactive_live_ranges()) {
     DCHECK(cur_inactive->End() > range->Start());
+    int cur_reg = cur_inactive->assigned_register();
+    // No need to carry out intersections, when this register won't be
+    // interesting to this range anyway.
+    // TODO(mtrofin): extend to aliased ranges, too.
+    if ((kSimpleFPAliasing || !check_fp_aliasing()) &&
+        positions[cur_reg] < range->Start()) {
+      continue;
+    }
+
     LifetimePosition next_intersection = cur_inactive->FirstIntersection(range);
     if (!next_intersection.IsValid()) continue;
-    int cur_reg = cur_inactive->assigned_register();
-    if (kSimpleFPAliasing || mode() == GENERAL_REGISTERS) {
+    if (kSimpleFPAliasing || !check_fp_aliasing()) {
       positions[cur_reg] = Min(positions[cur_reg], next_intersection);
       TRACE("Register %s is free until pos %d (2)\n", RegisterName(cur_reg),
             Min(positions[cur_reg], next_intersection).value());
@@ -3089,8 +3125,9 @@ bool LinearScanAllocator::TryAllocateFreeReg(
   const int* codes = allocatable_register_codes();
   MachineRepresentation rep = current->representation();
   if (!kSimpleFPAliasing && (rep == MachineRepresentation::kFloat32 ||
-                             rep == MachineRepresentation::kSimd128))
+                             rep == MachineRepresentation::kSimd128)) {
     GetFPRegisterSet(rep, &num_regs, &num_codes, &codes);
+  }
 
   DCHECK_GE(free_until_pos.length(), num_codes);
 
@@ -3115,6 +3152,9 @@ bool LinearScanAllocator::TryAllocateFreeReg(
     // the range end. Split current at position where it becomes blocked.
     LiveRange* tail = SplitRangeAt(current, pos);
     AddToUnhandledSorted(tail);
+
+    // Try to allocate preferred register once more.
+    if (TryAllocatePreferredReg(current, free_until_pos)) return true;
   }
 
   // Register reg is available at the range start and is free until the range
@@ -3144,6 +3184,9 @@ void LinearScanAllocator::AllocateBlockedReg(LiveRange* current) {
                              rep == MachineRepresentation::kSimd128))
     GetFPRegisterSet(rep, &num_regs, &num_codes, &codes);
 
+  // use_pos keeps track of positions a register/alias is used at.
+  // block_pos keeps track of positions where a register/alias is blocked
+  // from.
   LifetimePosition use_pos[RegisterConfiguration::kMaxFPRegisters];
   LifetimePosition block_pos[RegisterConfiguration::kMaxFPRegisters];
   for (int i = 0; i < num_regs; i++) {
@@ -3154,11 +3197,13 @@ void LinearScanAllocator::AllocateBlockedReg(LiveRange* current) {
     int cur_reg = range->assigned_register();
     bool is_fixed_or_cant_spill =
         range->TopLevel()->IsFixed() || !range->CanBeSpilled(current->Start());
-    if (kSimpleFPAliasing || mode() == GENERAL_REGISTERS) {
+    if (kSimpleFPAliasing || !check_fp_aliasing()) {
       if (is_fixed_or_cant_spill) {
         block_pos[cur_reg] = use_pos[cur_reg] =
             LifetimePosition::GapFromInstructionIndex(0);
       } else {
+        DCHECK_NE(LifetimePosition::GapFromInstructionIndex(0),
+                  block_pos[cur_reg]);
         use_pos[cur_reg] =
             range->NextLifetimePositionRegisterIsBeneficial(current->Start());
       }
@@ -3174,7 +3219,9 @@ void LinearScanAllocator::AllocateBlockedReg(LiveRange* current) {
               LifetimePosition::GapFromInstructionIndex(0);
         } else {
           use_pos[aliased_reg] =
-              range->NextLifetimePositionRegisterIsBeneficial(current->Start());
+              Min(block_pos[aliased_reg],
+                  range->NextLifetimePositionRegisterIsBeneficial(
+                      current->Start()));
         }
       }
     }
@@ -3182,11 +3229,24 @@ void LinearScanAllocator::AllocateBlockedReg(LiveRange* current) {
 
   for (LiveRange* range : inactive_live_ranges()) {
     DCHECK(range->End() > current->Start());
-    LifetimePosition next_intersection = range->FirstIntersection(current);
-    if (!next_intersection.IsValid()) continue;
     int cur_reg = range->assigned_register();
     bool is_fixed = range->TopLevel()->IsFixed();
-    if (kSimpleFPAliasing || mode() == GENERAL_REGISTERS) {
+
+    // Don't perform costly intersections if they are guaranteed to not update
+    // block_pos or use_pos.
+    // TODO(mtrofin): extend to aliased ranges, too.
+    if ((kSimpleFPAliasing || !check_fp_aliasing())) {
+      if (is_fixed) {
+        if (block_pos[cur_reg] < range->Start()) continue;
+      } else {
+        if (use_pos[cur_reg] < range->Start()) continue;
+      }
+    }
+
+    LifetimePosition next_intersection = range->FirstIntersection(current);
+    if (!next_intersection.IsValid()) continue;
+
+    if (kSimpleFPAliasing || !check_fp_aliasing()) {
       if (is_fixed) {
         block_pos[cur_reg] = Min(block_pos[cur_reg], next_intersection);
         use_pos[cur_reg] = Min(block_pos[cur_reg], use_pos[cur_reg]);
@@ -3220,19 +3280,18 @@ void LinearScanAllocator::AllocateBlockedReg(LiveRange* current) {
     }
   }
 
-  LifetimePosition pos = use_pos[reg];
-
-  if (pos < register_use->pos()) {
+  if (use_pos[reg] < register_use->pos()) {
+    // If there is a gap position before the next register use, we can
+    // spill until there. The gap position will then fit the fill move.
     if (LifetimePosition::ExistsGapPositionBetween(current->Start(),
                                                    register_use->pos())) {
       SpillBetween(current, current->Start(), register_use->pos());
-    } else {
-      SetLiveRangeAssignedRegister(current, reg);
-      SplitAndSpillIntersecting(current);
+      return;
     }
-    return;
   }
 
+  // We couldn't spill until the next register use. Split before the register
+  // is blocked, if applicable.
   if (block_pos[reg] < current->End()) {
     // Register becomes blocked before the current range end. Split before that
     // position.
@@ -3260,7 +3319,7 @@ void LinearScanAllocator::SplitAndSpillIntersecting(LiveRange* current) {
   LifetimePosition split_pos = current->Start();
   for (size_t i = 0; i < active_live_ranges().size(); ++i) {
     LiveRange* range = active_live_ranges()[i];
-    if (kSimpleFPAliasing || mode() == GENERAL_REGISTERS) {
+    if (kSimpleFPAliasing || !check_fp_aliasing()) {
       if (range->assigned_register() != reg) continue;
     } else {
       if (!data()->config()->AreAliases(current->representation(), reg,
@@ -3295,7 +3354,7 @@ void LinearScanAllocator::SplitAndSpillIntersecting(LiveRange* current) {
     LiveRange* range = inactive_live_ranges()[i];
     DCHECK(range->End() > current->Start());
     if (range->TopLevel()->IsFixed()) continue;
-    if (kSimpleFPAliasing || mode() == GENERAL_REGISTERS) {
+    if (kSimpleFPAliasing || !check_fp_aliasing()) {
       if (range->assigned_register() != reg) continue;
     } else {
       if (!data()->config()->AreAliases(current->representation(), reg,
